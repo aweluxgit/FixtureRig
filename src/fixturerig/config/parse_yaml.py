@@ -2,6 +2,10 @@
 # This module contains the code that parses the yaml files into the configuration model
 #
 # 
+# Design decision:
+# Keep track of which configuration file contained which path parameter to resolve config relative paths.
+# Paths can be relative to the config, a python module or a basepath.
+#
 # Example config:
 # --- 
 # - fixture: 
