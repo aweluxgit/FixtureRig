@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fixturerig"
+version = "0.1.0"
+description = "Python-first, object-oriented test framework for hardware-in-the-loop (HIL) and physical-system testing."
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+fixturerig = "fixturerig.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# fixturerig.config.model.TestCase / TestGroup are domain classes (named
+# after the config schema's "testcase"/"testgroup" entries), not pytest test
+# classes; silence the resulting, harmless collection warning.
+filterwarnings = ["ignore::pytest.PytestCollectionWarning"]
