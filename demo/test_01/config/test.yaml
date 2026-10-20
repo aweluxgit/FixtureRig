@@ -1,0 +1,17 @@
+---
+- fixture:
+    name: "Can"
+    class: ...
+- testcase:
+    name: "sometest"
+    class: ....
+    parametermap:
+      volt: 4.5
+      limit: 6.0
+- testgroup:
+  - testcase:
+      name: "foo"
+      class: ....
+      parametermap:
+        "p1": 4
+        "p2": "5"

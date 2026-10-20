@@ -23,15 +23,19 @@ import logging
 import sys
 
 from fixturerig.config.model import Config, ConfigError
-from fixturerig.config.parse_args import Args, ArgsError, parse_args
-from fixturerig.config.parse_yaml import load_config
+from fixturerig.config.parse_args import Args, ArgsError, read_config_from_args, read_app_args
+from fixturerig.config.parse_yaml import read_config_files
+from fixturerig.core.class_loader import add_python_paths
+from fixturerig.core.runner import run_tests
+from fixturerig.report.loader import build_report_stream
+from fixturerig.report.stream import ReportStream
 
 logger = logging.getLogger("fixturerig")
 
 
-def run(args: Args) -> Config:
+
+def config_summary(config, args: Args) -> Config:
     """Load and merge configuration for the given parsed arguments."""
-    config = load_config(args.config_paths)
     logger.info(
         "Loaded %d config file(s): %d fixture(s), %d testcase(s)",
         len(args.config_paths),
@@ -47,11 +51,37 @@ def run(args: Args) -> Config:
     return config
 
 
+
+def prepare_reports(config: Config) -> ReportStream:
+    """Create the report stream with every configured report module attached."""
+    return build_report_stream(config)
+
+
+def finalize_reports(report_stream: ReportStream) -> None:
+    """Let every report module finish its output (e.g. write its files)."""
+    report_stream.close()
+
+
+def phase_run_test(config, report_stream: ReportStream | None = None):
+    run_tests(config, report_stream)
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     try:
-        args = parse_args(argv)
-        run(args)
+        config = Config(entries=[])
+        args = read_app_args(argv)
+        read_config_from_args(config, args)
+        read_config_files(config, args.config_paths)
+        config_summary(config, args)
+        add_python_paths(config)
+        report_stream = prepare_reports(config)
+        try:
+            # run_generators(config)
+            run_tests(config, report_stream)
+        finally:
+            finalize_reports(report_stream)
+
     except ArgsError as exc:
         logger.error("Argument error: %s", exc)
         return 2
@@ -59,6 +89,13 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("Config error: %s", exc)
         return 1
     return 0
+
+
+
+    config = phase_configuration(argv)
+    #phase_run_generators(config)
+    phase_run_test(config)
+    #phase_finalize_reports(config)
 
 
 if __name__ == "__main__":

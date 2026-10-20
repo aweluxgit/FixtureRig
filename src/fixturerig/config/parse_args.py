@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 from pathlib import Path
+from fixturerig.config.model import Config, ConfigError
 
 
 class ArgsError(Exception):
@@ -67,7 +68,7 @@ def _split_param(raw: str) -> tuple[str, str]:
     return key, value
 
 
-def parse_args(argv: list[str] | None = None) -> Args:
+def read_app_args(argv: list[str] | None = None) -> Args:
     """Parse command line arguments into an Args instance.
 
     Raises ArgsError (rather than exiting the process) on invalid input, so
@@ -90,3 +91,14 @@ def parse_args(argv: list[str] | None = None) -> Args:
         config_paths=[Path(p) for p in namespace.config_paths],
         params=params,
     )
+
+
+def read_config_from_args(Config, args: Args) -> Config:
+    """Parse command line arguments into an Args instance.
+
+    Focus on config model related arguments. This is split to allow calling this from other applications.
+
+    Extracts the params arguments from the args and extends the config model with them.
+    Also extends the config model with any tracing and logging related options passed in the command line.
+    """
+    

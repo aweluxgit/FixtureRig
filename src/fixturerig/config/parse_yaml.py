@@ -4,7 +4,8 @@
 #
 # Design decision:
 # Keep track of which configuration file contained which path parameter to resolve config relative paths.
-# Paths can be relative to the config, a python module or a basepath.
+# Paths can be relative to the config, a python module or a base path
+# (see "parameterpath" below and ConfigPath in model.py).
 #
 # Example config:
 # ---
@@ -24,9 +25,10 @@
 #       parameterlist:
 #         - param: {name: "...", value: 4}
 #         - param: {name: "...", value: 4, type= "fstring"}
-#         - path: {name: "somepath", path = ..., relto = ..., basepath = ... }
+#         - path: {name: "somepath", path: ..., base_module: ..., base_path: ... }
 #       parameterpath:
-#         somepath: {path = ..., relto = ... }
+#         somepath: {path: ..., base_module: ... }
+#         otherpath: ../relative/to/this/config/file
 # ---
 # - parametermap:
 #     some
@@ -36,20 +38,39 @@
 #
 # - The document root must be a YAML list (or empty/null, treated as no
 #   entries).
-# - Each list item is a single-key mapping: "fixture", "testcase", or
-#   "testgroup". Any other shape, key count, or kind is a ConfigError -
+# - Each list item is a single-key mapping: "fixture", "testcase", "report",
+#   "pythonpath", or "testgroup". Any other shape, key count, or kind is a ConfigError -
 #   misspelled keys are rejected, never silently ignored or dropped.
 # - fixture/testcase bodies accept exactly `name` (required), `class`
-#   (required), and `parametermap` (optional mapping of literal values).
-#   `parameterlist`/`parameterpath`/typed params/path params from the
-#   schema sketch above are not implemented yet; using them raises a clear
-#   ConfigError rather than being silently accepted or misparsed.
+#   (required), `parametermap` (optional mapping of literal values) and
+#   `parameterpath` (optional mapping of path parameters).
+#   `parameterlist` and typed params from the schema sketch above are not
+#   implemented yet; using them raises a clear ConfigError rather than being
+#   silently accepted or misparsed.
+# - parameterpath maps a parameter name to either a string (shorthand for
+#   {path: <string>}) or a mapping with `path` (required) and at most one of
+#   `base_module` / `base_path`. Each becomes a ConfigPath (model.py), stored
+#   in the entry's params next to the parametermap values and resolved when
+#   the object is created. A name given in both parametermap and
+#   parameterpath is a ConfigError.
+# - A pythonpath entry is anonymous; its value is a single path value with
+#   exactly the parameterpath value syntax (and the same parser), e.g.
+#     - pythonpath: ..
+#     - pythonpath: {path: lib, base_module: some.package}
+# - testcase bodies additionally accept `traceability`: a string or a list of
+#   strings referencing a test management tool.
+# - report bodies accept `class` (required), `name`, `parametermap` and
+#   `parameterpath` (all optional), e.g.
+#     - report:
+#         class: fixturerig.report.json_report.JsonReport
+#         parameterpath:
+#           path: ../reports/results.json
 # - testgroup bodies accept either a bare list of nested entries (an
 #   anonymous group, matching the sketch above) or a mapping of
 #   {name, entries} for a named group. Nested entries follow the same
 #   rules, recursively.
-# - Every parsed entry records the source file path, for future relative
-#   path resolution.
+# - Every parsed entry records the source file path; it is also stored on
+#   every ConfigPath as the default base for relative paths.
 
 from __future__ import annotations
 
@@ -62,16 +83,25 @@ from fixturerig.config.model import (
     Config,
     ConfigEntry,
     ConfigError,
+    ConfigPath,
     Fixture,
+    PythonPath,
+    Report,
     TestCase,
     TestGroup,
 )
 
 _FIXTURE_REQUIRED_KEYS = {"name", "class"}
-_FIXTURE_ALLOWED_KEYS = _FIXTURE_REQUIRED_KEYS | {"parametermap"}
+_PARAM_KEYS = {"parametermap", "parameterpath"}
+_PARAMPATH_KEYS = {"path", "base_module", "base_path"}
+
+_FIXTURE_ALLOWED_KEYS = _FIXTURE_REQUIRED_KEYS | _PARAM_KEYS
 
 _TESTCASE_REQUIRED_KEYS = {"name", "class"}
-_TESTCASE_ALLOWED_KEYS = _TESTCASE_REQUIRED_KEYS | {"parametermap"}
+_TESTCASE_ALLOWED_KEYS = _TESTCASE_REQUIRED_KEYS | _PARAM_KEYS | {"traceability"}
+
+_REPORT_REQUIRED_KEYS = {"class"}
+_REPORT_ALLOWED_KEYS = _REPORT_REQUIRED_KEYS | _PARAM_KEYS | {"name"}
 
 _TESTGROUP_REQUIRED_KEYS: set[str] = set()
 _TESTGROUP_ALLOWED_KEYS = _TESTGROUP_REQUIRED_KEYS | {"name", "entries"}
@@ -102,12 +132,11 @@ def parse_yaml_file(path: str | Path) -> Config:
     return Config(entries=entries)
 
 
-def load_config(paths: list[str | Path]) -> Config:
+def read_config_files(config, paths: list[str | Path]) -> Config:
     """Parse and merge multiple config files, in the order given.
 
     See Config.extend for the (currently simple, append-only) merge rule.
     """
-    config = Config(entries=[])
     for path in paths:
         config.extend(parse_yaml_file(path))
     return config
@@ -117,7 +146,7 @@ def _parse_entry(item: Any, source: Path) -> ConfigEntry:
     if not isinstance(item, dict) or len(item) != 1:
         raise ConfigError(
             f"{source}: each config entry must be a single-key mapping "
-            f"('fixture', 'testcase', or 'testgroup'), got {item!r}"
+            f"('fixture', 'testcase', 'report', 'pythonpath', or 'testgroup'), got {item!r}"
         )
 
     ((kind, body),) = item.items()
@@ -126,12 +155,16 @@ def _parse_entry(item: Any, source: Path) -> ConfigEntry:
         return _parse_fixture(body, source)
     if kind == "testcase":
         return _parse_testcase(body, source)
+    if kind == "report":
+        return _parse_report(body, source)
+    if kind == "pythonpath":
+        return PythonPath(path=_parse_path_value(body, source, "pythonpath"), source=source)
     if kind == "testgroup":
         return _parse_testgroup(body, source)
 
     raise ConfigError(
         f"{source}: unknown config entry kind {kind!r}, expected "
-        f"'fixture', 'testcase', or 'testgroup'"
+        f"'fixture', 'testcase', 'report', 'pythonpath', or 'testgroup'"
     )
 
 
@@ -153,12 +186,51 @@ def _check_keys(body: dict, allowed: set[str], required: set[str], source: Path,
 
 
 def _parse_params(body: dict, source: Path, kind: str) -> dict:
-    params = body.get("parametermap", {})
-    if not isinstance(params, dict):
+    params = _section(body, "parametermap", source, kind)
+    paths = _section(body, "parameterpath", source, kind)
+
+    both = sorted(set(params) & set(paths))
+    if both:
         raise ConfigError(
-            f"{source}: {kind} parametermap must be a mapping, got {type(params).__name__}"
+            f"{source}: {kind} parameter(s) {both} given in both parametermap and parameterpath"
         )
-    return dict(params)
+
+    merged = dict(params)
+    for name, value in paths.items():
+        merged[name] = _parse_path_value(value, source, f"{kind} parameterpath {name!r}")
+    return merged
+
+
+def _section(body: dict, key: str, source: Path, kind: str) -> dict:
+    section = body.get(key, {})
+    if section is None:
+        return {}
+    if not isinstance(section, dict):
+        raise ConfigError(f"{source}: {kind} {key} must be a mapping, got {type(section).__name__}")
+    return section
+
+
+def _parse_path_value(value: Any, source: Path, what: str) -> ConfigPath:
+    """Parse any path value of the config: a string, or a {path, base_module | base_path} mapping."""
+    where = f"{source}: {what}"
+    if isinstance(value, str):
+        value = {"path": value}
+    if not isinstance(value, dict):
+        raise ConfigError(f"{where} must be a string or a mapping, got {type(value).__name__}")
+    unknown = sorted(set(value) - _PARAMPATH_KEYS)
+    if unknown:
+        raise ConfigError(f"{where}: unknown key(s) {unknown}, allowed: {sorted(_PARAMPATH_KEYS)}")
+    if "path" not in value:
+        raise ConfigError(f"{where}: missing required key 'path'")
+    try:
+        return ConfigPath(
+            path=value["path"],
+            base_module=value.get("base_module"),
+            base_path=value.get("base_path"),
+            source=source,
+        )
+    except ConfigError as exc:
+        raise ConfigError(f"{where}: {exc}") from exc
 
 
 def _parse_fixture(body: Any, source: Path) -> Fixture:
@@ -179,6 +251,29 @@ def _parse_testcase(body: Any, source: Path) -> TestCase:
         name=body["name"],
         cls=body["class"],
         params=_parse_params(body, source, "testcase"),
+        source=source,
+        traceability=_parse_traceability(body, source),
+    )
+
+
+def _parse_traceability(body: dict, source: Path) -> list[str]:
+    refs = body.get("traceability", [])
+    if isinstance(refs, (str, int)):
+        refs = [refs]
+    if not isinstance(refs, list) or not all(isinstance(ref, (str, int)) for ref in refs):
+        raise ConfigError(
+            f"{source}: testcase traceability must be a string or a list of strings, got {refs!r}"
+        )
+    return [str(ref) for ref in refs]
+
+
+def _parse_report(body: Any, source: Path) -> Report:
+    body = _require_mapping(body, source, "report")
+    _check_keys(body, _REPORT_ALLOWED_KEYS, _REPORT_REQUIRED_KEYS, source, "report")
+    return Report(
+        cls=body["class"],
+        params=_parse_params(body, source, "report"),
+        name=body.get("name"),
         source=source,
     )
 

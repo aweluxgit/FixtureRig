@@ -30,9 +30,16 @@ Keep the implementation centered on the existing package boundaries:
 - `fixturerig.core.module_loader` loads configured Python classes and extension modules.
 - `fixturerig.core.runner` coordinates setup, test generation, execution, and results.
 - `fixturerig.fixtures` contains reusable interfaces and device implementations, such as CAN and power fixtures.
+- `fixturerig.base` contains base classes for fixtures and tests.
+- `fixturerig.report` contains the report stream, the reportable content (text, tables, charts, images, verdicts), the global `report()` accessor and the report modules (console, JSON, HTML, Allure, Excel, PDF, PDF test spec).
 - `fixturerig.main` is the command-line entry point.
 
 Prefer existing abstractions and small cooperating modules over a monolithic runner. Device access belongs behind fixture or interface objects, while the runner owns lifecycle and ordering.
+
+Outside of the src directory resides the folloowing directories:
+
+- `demo` contains example configurations and tests. The demo is a demonstration of how to use the framework.
+
 
 ## Configuration-Driven Construction
 
@@ -72,6 +79,8 @@ The matching configuration can provide the `power_supply` object and the numeric
 
 The exact schema is still evolving, so preserve compatibility with the models already present in `fixturerig.config`. Do not silently consume misspelled parameters. Missing required values, ambiguous conversions, unresolved classes, and unexpected parameters should produce actionable errors.
 
+One feature is to use the fixturerig code as a library. In this case a config model can be build up by calling functions that parse config files or arguments and expand the config model each time.
+
 ### Values and Conversion
 
 The design anticipates scalar values such as strings, integers, floats, booleans, `None`, paths, lists, and dictionaries. YAML is preferred because it is human-readable, supports comments and nesting, and is a superset of JSON. YAML anchors and aliases may be useful for shared fixture settings.
@@ -99,7 +108,7 @@ When configuration values override one another, use an explicit and deterministi
 
 ## Extension Model
 
-Fixtures, test cases, and generators should be loadable plugins or configured classes. The common extension pattern is a base class with project-specific subclasses or a plugin that overrides selected behavior while retaining access to host state.
+Fixtures, test cases, generators, and report modules should be loadable plugins or configured classes. The common extension pattern is a base class with project-specific subclasses or a plugin that overrides selected behavior while retaining access to host state.
 
 Plugins should support these use cases:
 
@@ -109,6 +118,8 @@ Plugins should support these use cases:
 - Load reporting modules using a mechanism similar to fixture loading.
 
 Keep plugin composition understandable. Plugin chaining, plugins for plugins, and a universal host API are not MVP requirements. If host access is needed, define one canonical API rather than relying on ambiguous names such as `self.host`.
+
+The configuration entries for the extensions above all have a class field. That field contains a python import path in the form of "package.module.class". The python import roots apply when resolving these names.
 
 ## Devices and Interoperability
 
@@ -130,6 +141,85 @@ Logging is part of the core design, not an afterthought. Use the standard loggin
 The likely UI direction is a local web UI for device configuration, interactive tests, and monitoring. A default UI should support unknown devices through a basic self-test response, while richer device-specific views can be added later. WPF is possible for a Windows-only tool, but a web UI keeps the backend more portable.
 
 Reporting should begin with console output and a structured result model, then grow toward HTML and PDF reports. Reports must retain enough context to diagnose failures: selected configuration, fixture identity, test identity, logs, timings, and device or DUT information.
+
+
+## Reporting
+
+The test framework supports a modular approach to reporting where multiple different reporting modules can be active, all with a different purpose.
+Each module filters the relevant messages from a report stream.
+
+Typical report modules are:
+- ConsoleReport (active by default)
+- PDF report
+- HTML report
+- Allure report
+- Json report
+- PDF Test spec reporting (ignores verdicts and just summarizes test specs)
+- ColoredConsoleReport
+- ExcelReport
+
+The report modules are initialized via the config model. They use the same params format as tests for their configuration parameters.
+They also allow the same inheritance model to pass these parameters to their init method.
+
+Reporting uses a concept where tests can only report limited feedback:
+- Text
+- Tables
+- Charts
+- Verdicts
+- Images? (Unclear use case)
+
+Calling a function that reports one of these events adds them to a report stream and all attached report modules will then pick up these events and add them in an appropriate form into their report.
+The framework will also report additional information into the report stream:
+- When a test group is started and stopped.
+- The test name
+- Overall test verdict
+- Reference to test management tool for traceability
+
+While a test is running it can use the report function to access the global report stream.
+
+Tables exist in a simple variant with just text inside and a complex variant that can have any element inside including other tables.
+
+## Base classes
+
+There are base classes for fixtures, test cases, and verdics. The base classes provide a common interface for the framework to interact with the fixtures and test cases.
+The base classes contain the plugin hooks for the plugin system for fixtures and test cases.
+The base classes also contain the common functionality for the fixtures and test cases.
+
+### Test case module
+
+Contains the following methods for the testcase class:
+- `setup`: called before the test case is run. Used to setup the test case.
+- `test`: called to run the test case itself. This is the only mandatory method.
+	The verdict of the test case is determined by the return value of this method. The return value can be a boolean or a verdict object.
+	If the test method throws an exception, the test case is considered an error unless the returned exception is inheriting from a verdict_exception. In that case the verdict is determined by the exception.
+- `teardown`: called after the test case is run. Used to teardown the test case.
+
+### Fixture module
+
+Contains the following methods for the fixture class:
+- `setup`: called before the fixture is used. Used to setup and connect the fixture.
+- `self_test`: called after the fixture is setup. Used to perform a self test on the fixture to ensure it is working correctly.
+- `start`: called before each test case after the fixture is setup. Used to start the fixture and prepare it for use.
+- `stop`: called after each test case when the fixture was used. Used to stop the fixture.
+- `lazy_stop`: called when a newly instantiated testcase doesn't require the fixture after the last testcase required it.
+- `disconnect`: called after the fixture is used. Used to disconnect the fixture safely from others before teardown.
+- `teardown`: called after the fixture is used. Used to teardown the fixture and free resources.
+
+### Verdict module
+
+Contains the following methods for the verdict class:
+- `__init__`: called when an instance of the verdict class is created. Used to initialize the verdict.
+- `__str__`: called when an instance of the verdict class is converted to a string. Used to provide a string representation of the verdict.
+- `__repr__`: called when an instance of the verdict class is represented in a list or other collection. Used to provide a detailed string representation of the verdict.
+
+There are multiple possible verdicts:
+- `passed`: the test case passed.
+- `failed`: the test case failed.
+- `error`: the test case encountered an error or exception that was not handled by the test case.
+- `skipped`: the test case was skipped due to a configuration or fixture issue.
+- `none`: the test case did not return a verdict. This is considered an error unless the test case is marked as a 'script'. This can't be set by the test itself.
+- `knownfailed`: the test case is known to fail and is expected to fail. This is used for tests that are not yet implemented or are known to be broken. This can't be set by the test itself.
+
 
 ## MVP Boundary
 

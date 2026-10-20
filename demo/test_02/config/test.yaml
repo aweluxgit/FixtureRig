@@ -1,0 +1,8 @@
+---
+- testcase:
+    name: "sometest"
+    class: tests.testcase_01.TestCase01
+    parametermap:
+      dummy: dummy
+      volt: 4.5
+      limit: 6.0

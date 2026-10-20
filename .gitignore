@@ -3,5 +3,10 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .venv/
+.codex/
 build/
 dist/
+
+# Demo output
+demo/reports/
+demo/logs/
