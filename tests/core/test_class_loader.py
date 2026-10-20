@@ -4,7 +4,7 @@ from fixturerig.core.class_loader import ClassLoadError, load_class
 
 
 def test_loads_class_by_fully_qualified_name():
-    cls = load_class("fixturerig.fixtures.base.fixture.Fixture")
+    cls = load_class("fixturerig.base.fixture.Fixture")
 
     from fixturerig.base.fixture import Fixture
 
@@ -23,7 +23,7 @@ def test_unimportable_module_raises():
 
 def test_missing_class_in_module_raises():
     with pytest.raises(ClassLoadError, match="no attribute"):
-        load_class("fixturerig.fixtures.base.fixture.NotAClass")
+        load_class("fixturerig.base.fixture.NotAClass")
 
 
 def test_non_class_attribute_raises():

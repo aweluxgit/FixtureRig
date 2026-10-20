@@ -2,8 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from fixturerig.config.parse_args import read_args
-from fixturerig.main import main, run
+from fixturerig.config.model import Config
+from fixturerig.config.parse_args import read_app_args
+from fixturerig.config.parse_yaml import read_config_files
+from fixturerig.main import main
 
 
 def _write(tmp_path: Path, name: str, text: str) -> Path:
@@ -12,16 +14,16 @@ def _write(tmp_path: Path, name: str, text: str) -> Path:
     return path
 
 
-def test_run_loads_and_merges_configured_files(tmp_path):
+def test_args_config_paths_load_and_merge_in_order(tmp_path):
     first = _write(tmp_path, "first.yaml", "- fixture:\n    name: can\n    class: pkg.Can\n")
     second = _write(
         tmp_path,
         "second.yaml",
         "- testcase:\n    name: voltage_limit\n    class: pkg.VoltageLimitTest\n",
     )
-    args = read_args(["--config", str(first), "--config", str(second)])
+    args = read_app_args(["--config", str(first), "--config", str(second)])
 
-    config = run(args)
+    config = read_config_files(Config(entries=[]), args.config_paths)
 
     assert [entry.name for entry in config.entries] == ["can", "voltage_limit"]
 

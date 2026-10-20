@@ -18,7 +18,7 @@
 #   override) config value:
 #     * no hint / Any -> the value is passed through unconverted.
 #     * a value already an instance of the hinted type -> passed through.
-#     * a hint that is a Fixture subclass (fixturerig.fixtures.base.fixture.
+#     * a hint that is a Fixture subclass (fixturerig.base.fixture.
 #       Fixture, the base class device/interface implementations inherit
 #       from - NOT fixturerig.config.model.Fixture, which is the config
 #       *entry* describing one) -> the raw value is a *reference* to

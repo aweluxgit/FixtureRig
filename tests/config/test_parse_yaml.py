@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from fixturerig.config.model import ConfigError, Fixture, TestCase, TestGroup
-from fixturerig.config.parse_yaml import read_configs, parse_yaml_file
+from fixturerig.config.model import Config, ConfigError, Fixture, TestCase, TestGroup
+from fixturerig.config.parse_yaml import parse_yaml_file, read_config_files
 
 
 def _write(tmp_path: Path, name: str, text: str) -> Path:
@@ -173,6 +173,6 @@ def test_load_config_merges_files_in_order(tmp_path):
     first = _write(tmp_path, "first.yaml", "- fixture:\n    name: a\n    class: pkg.A\n")
     second = _write(tmp_path, "second.yaml", "- fixture:\n    name: b\n    class: pkg.B\n")
 
-    config = read_configs([first, second])
+    config = read_config_files(Config(entries=[]), [first, second])
 
     assert [entry.name for entry in config.entries] == ["a", "b"]
