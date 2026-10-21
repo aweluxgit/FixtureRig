@@ -8,7 +8,7 @@ FixtureRig is an object-oriented test framework for hardware-in-the-loop (HIL) a
 
 ## Why FixtureRig?
 
-- **Plain Python, no framework DSL.** Dependencies are constructor arguments with type hints. A test that needs a power supply asks for one in `__init__`.
+- **Plain Python, no framework DSL.** Dependencies are constructor arguments with type hints. A test that needs a power supply asks for one in it's test function parameters.
 - **Configuration-driven rigs.** YAML describes which fixtures exist and how they are set up. Tests never hard-code `COM4` or `192.168.0.10`.
 - **Strict, actionable config errors.** Misspelled keys, unknown parameters and missing required values are reported, never silently ignored.
 - **Ordered execution for shared hardware.** Tests run in config order. Fixtures are created once, shared, and driven through an explicit lifecycle.
