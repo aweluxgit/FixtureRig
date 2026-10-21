@@ -4,10 +4,10 @@ Tests report through the global stream::
 
     from fixturerig.report import report
 
-    report().text("Ramping supply to 5 V")
-    report().table([["U", 4.93], ["I", 0.21]], headers=["Signal", "Value"])
-    report().chart("Ramp", {"U": (times, volts)}, x_label="s", y_label="V")
-    report().check(volts[-1] < 5.1, "final voltage below 5.1 V")
+    report.text("Ramping supply to 5 V")
+    report.table([["U", 4.93], ["I", 0.21]], headers=["Signal", "Value"])
+    report.chart("Ramp", {"U": (times, volts)}, x_label="s", y_label="V")
+    report.check(volts[-1] < 5.1, "final voltage below 5.1 V")
 
 Report modules (console, JSON, HTML, Allure, Excel, PDF, test spec PDF) are
 configured with ``report`` entries and receive every event they accept. The
@@ -35,7 +35,7 @@ from fixturerig.report.events import (
 )
 from fixturerig.report.module import ReportModule
 from fixturerig.report.recording import RecordingReport
-from fixturerig.report.stream import ReportStream, report
+from fixturerig.report.stream import ReportStream, current_stream, report
 
 __all__ = [
     "Chart",
@@ -63,5 +63,6 @@ __all__ = [
     "Text",
     "TextEvent",
     "VerdictEvent",
+    "current_stream",
     "report",
 ]

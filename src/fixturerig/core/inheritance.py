@@ -62,6 +62,13 @@
 #   a hard error, not a silent drop - see high-level-design's "Do not
 #   silently consume misspelled parameters."
 #
+# - map_config_to_methods maps one config node onto several callables at
+#   once (for a testcase: __init__, setup, test and teardown). Every
+#   callable gets each config key it names, so the same key may feed more
+#   than one of them (e.g. a fixture used by both setup() and test()). Each
+#   callable still raises for its own missing required parameters, and a
+#   key is only an unknown parameter if *none* of the callables takes it.
+#
 
 from __future__ import annotations
 
@@ -114,7 +121,47 @@ def map_config_to_method_args(
         inheritance hierarchy).
     """
     params = getattr(config, "params", config)
+    mapped_args, remaining = _map_onto(params, func, instantiate_fixture)
+    if remaining:
+        raise ArgumentMappingError(f"Unknown parameter(s) {sorted(remaining)} for {_describe(func)}")
+    return mapped_args
 
+
+def map_config_to_methods(
+    config: Any,
+    funcs: list[Any],
+    instantiate_fixture: InstantiateFixture | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Maps configuration parameters onto the arguments of several callables.
+
+    Like map_config_to_method_args, but every callable in `funcs` receives
+    the config keys it names, so a key may be passed to more than one of
+    them. A key is an unknown parameter only if no callable takes it.
+
+    :return: One dict of keyword arguments per callable, in `funcs` order.
+    :raises ArgumentMappingError: as map_config_to_method_args; an unknown
+        key is reported once, against all of `funcs`.
+    """
+    params = getattr(config, "params", config)
+    results: list[dict[str, Any]] = []
+    unmatched = set(params)
+    for func in funcs:
+        mapped_args, remaining = _map_onto(params, func, instantiate_fixture)
+        results.append(mapped_args)
+        unmatched &= set(remaining)
+    if unmatched:
+        targets = ", ".join(_describe(func) for func in funcs)
+        raise ArgumentMappingError(f"Unknown parameter(s) {sorted(unmatched)} for {targets}")
+    return results
+
+
+def _map_onto(
+    params: Any,
+    func: Any,
+    instantiate_fixture: InstantiateFixture | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Map `params` onto `func`; return the mapped kwargs and the unmatched keys."""
     sig = inspect.signature(func)
     hints = _resolve_hints(func)
 
@@ -150,10 +197,7 @@ def map_config_to_method_args(
             )
             remaining = {name: value for name, value in remaining.items() if name not in consumed}
 
-    if remaining:
-        raise ArgumentMappingError(f"Unknown parameter(s) {sorted(remaining)} for {_describe(func)}")
-
-    return mapped_args
+    return mapped_args, remaining
 
 
 def _map_via_mro(

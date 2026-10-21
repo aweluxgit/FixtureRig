@@ -11,6 +11,11 @@ class TestCase:
     Subclasses implement :meth:`test`. ``setup`` and ``teardown`` are
     optional hooks and default to no-ops. The test result is a boolean or a
     :class:`Verdict`; exceptions are left for the runner to classify.
+
+    Config parameters are passed by name to whichever of ``__init__``,
+    ``setup``, ``test`` and ``teardown`` declare them, so a subclass may
+    add parameters to any of these methods, and several methods may take
+    the same parameter.
     """
 
     def setup(self) -> None:

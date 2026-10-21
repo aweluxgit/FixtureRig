@@ -61,25 +61,20 @@ from fixturerig.report import report
 class TestCase01(TestCase):
     """Ramps the simulated supply voltage up to `volt` and checks it stays within `limit`."""
 
-    def __init__(self, dummy: DummyFixture, volt: float, limit: float):
-        self.dummy = dummy
-        self.volt = volt
-        self.limit = limit
+    def setup(self, dummy: DummyFixture) -> None:
+        dummy.write("voltage", 0.0)
 
-    def setup(self) -> None:
-        self.dummy.write("voltage", 0.0)
+    def test(self, dummy: DummyFixture, volt: float, limit: float) -> bool:
+        report.text(f"Ramping the supply to {volt} V")
+        dummy.write("voltage", volt)
+        reading = dummy.read("voltage")
+        return report.check(reading <= limit, f"{reading:.2f} V <= {limit} V")
 
-    def test(self) -> bool:
-        report().text(f"Ramping the supply to {self.volt} V")
-        self.dummy.write("voltage", self.volt)
-        reading = self.dummy.read("voltage")
-        return report().check(reading <= self.limit, f"{reading:.2f} V <= {self.limit} V")
-
-    def teardown(self) -> None:
-        self.dummy.write("voltage", 0.0)
+    def teardown(self, dummy: DummyFixture) -> None:
+        dummy.write("voltage", 0.0)
 ```
 
-The `dummy: DummyFixture` type hint is all FixtureRig needs. Any parameter annotated with a `Fixture` subclass is resolved by name to a configured fixture.
+FixtureRig fills the parameters of `__init__`, `setup`, `test` and `teardown` from the test's `parametermap`, matching by name. A parameter can appear in more than one method; above, `setup`, `test` and `teardown` all get the same `dummy` fixture. Type hints drive conversion. The `dummy: DummyFixture` type hint is all FixtureRig needs: any parameter annotated with a `Fixture` subclass is resolved by name to a configured fixture.
 
 ### 2. Describe the rig and the tests in YAML
 
@@ -148,7 +143,7 @@ Fixtures are created lazily and shared by every test that references them. They 
 
 ### Test cases
 
-Subclass `fixturerig.base.TestCase` and implement `test()`. `setup()` and `teardown()` are optional. The verdict is decided as follows:
+Subclass `fixturerig.base.TestCase` and implement `test()`. `setup()` and `teardown()` are optional. Config parameters are passed by name to whichever of `__init__`, `setup()`, `test()` and `teardown()` declare them, so several methods can receive the same value. A parameter that no method declares, or a required parameter that is missing, skips the test. Fixtures get their parameters through `__init__` only. The verdict is decided as follows:
 
 | Outcome                                              | Verdict   |
 |------------------------------------------------------|-----------|
@@ -158,7 +153,7 @@ Subclass `fixturerig.base.TestCase` and implement `test()`. `setup()` and `teard
 | `test()` raises any other exception                  | error     |
 | `test()` returns nothing                             | none (counted as not passed) |
 | Class can't be loaded, bad params, broken fixture    | skipped   |
-| A `report().check(...)` failed during the test       | failed, even if `test()` returned `True` |
+| A `report.check(...)` failed during the test       | failed, even if `test()` returned `True` |
 
 ### Reporting
 
@@ -167,10 +162,10 @@ Tests and fixtures report through the global stream:
 ```python
 from fixturerig.report import report
 
-report().text("Ramping supply to 5 V")
-report().table([["U", 4.93], ["I", 0.21]], headers=["Signal", "Value"])
-report().chart("Ramp", {"U": (times, volts)}, x_label="s", y_label="V")
-report().check(volts[-1] < 5.1, "final voltage below 5.1 V")
+report.text("Ramping supply to 5 V")
+report.table([["U", 4.93], ["I", 0.21]], headers=["Signal", "Value"])
+report.chart("Ramp", {"U": (times, volts)}, x_label="s", y_label="V")
+report.check(volts[-1] < 5.1, "final voltage below 5.1 V")
 ```
 
 Every configured report module picks up the events it cares about. The console report is always on. The other modules are enabled with `report` entries:

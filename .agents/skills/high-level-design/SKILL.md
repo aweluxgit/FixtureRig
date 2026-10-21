@@ -31,7 +31,7 @@ Keep the implementation centered on the existing package boundaries:
 - `fixturerig.core.runner` coordinates setup, test generation, execution, and results.
 - `fixturerig.fixtures` contains reusable interfaces and device implementations, such as CAN and power fixtures.
 - `fixturerig.base` contains base classes for fixtures and tests.
-- `fixturerig.report` contains the report stream, the reportable content (text, tables, charts, images, verdicts), the global `report()` accessor and the report modules (console, JSON, HTML, Allure, Excel, PDF, PDF test spec).
+- `fixturerig.report` contains the report stream, the reportable content (text, tables, charts, images, verdicts), the global `report` proxy and the report modules (console, JSON, HTML, Allure, Excel, PDF, PDF test spec).
 - `fixturerig.main` is the command-line entry point.
 
 Prefer existing abstractions and small cooperating modules over a monolithic runner. Device access belongs behind fixture or interface objects, while the runner owns lifecycle and ordering.
@@ -49,8 +49,8 @@ The intended construction heuristic is:
 
 1. Load a configuration tree, including configuration split across files or directories when needed.
 2. Resolve a configured class through the module loader.
-3. Inspect the class and its bases to determine accepted constructor keyword arguments.
-4. Match configured names to constructor parameters and inherited parameters.
+3. Inspect the class and its bases to determine accepted constructor keyword arguments. For tests, also inspect the `setup`, `test` and `teardown` methods.
+4. Match configured names to constructor parameters and inherited parameters, and for tests to the method parameters. A name may match parameters of several methods; a name that matches none is an error.
 5. Use type hints to provide IDE support, identify values that represent configured interfaces, and perform automatic conversion where it is unambiguous.
 6. Instantiate the object with the resolved keyword arguments.
 
@@ -58,9 +58,8 @@ For example, a test may express its dependency in normal Python:
 
 ```python
 class VoltageLimitTest:
-	def __init__(self, power_supply: PowerSupply, limit: float):
-		self.power_supply = power_supply
-		self.limit = limit
+	def test(self, power_supply: PowerSupply, limit: float):
+		power_supply.set_voltage(limit/2)
 ```
 
 The matching configuration can provide the `power_supply` object and the numeric `limit` without requiring a second, framework-specific dependency declaration:
@@ -80,6 +79,8 @@ The matching configuration can provide the `power_supply` object and the numeric
 The exact schema is still evolving, so preserve compatibility with the models already present in `fixturerig.config`. Do not silently consume misspelled parameters. Missing required values, ambiguous conversions, unresolved classes, and unexpected parameters should produce actionable errors.
 
 One feature is to use the fixturerig code as a library. In this case a config model can be build up by calling functions that parse config files or arguments and expand the config model each time.
+
+The framework inspects the __init__ method arguments for all classes using configuration based construction. For tests also the test, setup, and teardown method parameters are taken from the config file. For example this might result in the test and setup method to get the same config parameters.
 
 ### Values and Conversion
 

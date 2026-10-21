@@ -7,7 +7,7 @@ from fixturerig.config.model import Fixture as FixtureEntry
 from fixturerig.config.model import TestCase as TestCaseEntry
 from fixturerig.config.model import TestGroup
 from fixturerig.core.runner import FixtureManager, run_test, run_tests
-from fixturerig.report import ReportModule, ReportStream, report
+from fixturerig.report import ReportModule, ReportStream, current_stream, report
 
 CALLS: list[str] = []
 
@@ -266,21 +266,21 @@ class Documented(BaseTestCase):
     """
 
     def test(self):
-        report().text("measuring")
-        report().check(True, "first check")
+        report.text("measuring")
+        report.check(True, "first check")
         return True
 
 
 class SoftFails(BaseTestCase):
     def test(self):
-        report().check(False, "U too high")
-        report().check(False, "I too high")
+        report.check(False, "U too high")
+        report.check(False, "I too high")
         return True
 
 
 class SoftFailsThenErrors(BaseTestCase):
     def test(self):
-        report().check(False, "U too high")
+        report.check(False, "U too high")
         raise RuntimeError("boom")
 
 
@@ -361,7 +361,7 @@ def test_report_reaches_the_run_stream_from_inside_tests():
     stream = ReportStream([recorder])
     run_test(TestCaseEntry(name="a", cls=cls_path(Documented)), FixtureManager(make_config()), stream)
     assert [e.kind for e in recorder.events] == ["test_started", "text", "verdict", "test_finished"]
-    assert report() is not stream  # deactivated after the test
+    assert current_stream() is not stream  # deactivated after the test
 
 
 class Aborts(BaseTestCase):
@@ -374,3 +374,41 @@ def test_run_finished_is_reported_when_the_run_aborts():
     with pytest.raises(KeyboardInterrupt):
         run_tests(make_config(TestCaseEntry(name="a", cls=cls_path(Aborts))), ReportStream([recorder]))
     assert recorder.events[-1].kind == "run_finished"
+
+
+class MethodParams(BaseTestCase):
+    def setup(self, power_supply: Psu):
+        CALLS.append(f"test.setup:{power_supply.port}")
+
+    def test(self, power_supply: Psu, limit: float) -> bool:
+        CALLS.append(f"test.test:{power_supply.port}")
+        return limit > 1
+
+    def teardown(self, power_supply: Psu):
+        CALLS.append(f"test.teardown:{power_supply.port}")
+
+
+def test_setup_test_and_teardown_get_their_config_params():
+    entry = TestCaseEntry(name="m", cls=cls_path(MethodParams), params={"power_supply": "psu", "limit": 4.5})
+    result = run_test(entry, FixtureManager(make_config(psu_entry(), entry)))
+
+    assert result.verdict.status is VerdictStatus.PASSED
+    assert CALLS == [
+        "psu.setup:COM1",
+        "psu.self_test",
+        "psu.start",
+        "test.setup:COM1",
+        "test.test:COM1",
+        "test.teardown:COM1",
+        "psu.stop",
+    ]
+
+
+def test_param_no_method_takes_is_skipped():
+    entry = TestCaseEntry(
+        name="m", cls=cls_path(MethodParams), params={"power_supply": "psu", "limit": 4.5, "typo": 1}
+    )
+    result = run_test(entry, FixtureManager(make_config(psu_entry(), entry)))
+
+    assert result.verdict.status is VerdictStatus.SKIPPED
+    assert "typo" in result.verdict.message

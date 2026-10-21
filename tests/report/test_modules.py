@@ -38,7 +38,7 @@ def cls_path(cls: type) -> str:
 
 class Psu(Fixture):
     def setup(self):
-        report().text("psu connected")
+        report.text("psu connected")
 
 
 class Measures(BaseTestCase):
@@ -48,20 +48,20 @@ class Measures(BaseTestCase):
         self.limit = limit
 
     def test(self):
-        report().text("ramping <supply>")
-        report().table([["U", 4.9], ["I", 0.2]], headers=["Signal", "Value"], title="Readings")
-        report().table(Table([["nested", Table([["a", 1]])], ["picture", Image(data=PNG, caption="pic")]]))
-        report().chart("Ramp", {"U": ([0, 1, 2], [0.0, 2.5, 4.9])}, x_label="s", y_label="V")
-        report().chart("Bars", {"n": (["a", "b"], [1, 3])}, kind="bar")
-        report().chart("Dots", {"n": ([0, 1], [1, 3])}, kind="scatter")
-        report().image(Image(data=PNG, caption="scope"))
-        report().check(True, "U within limit")
+        report.text("ramping <supply>")
+        report.table([["U", 4.9], ["I", 0.2]], headers=["Signal", "Value"], title="Readings")
+        report.table(Table([["nested", Table([["a", 1]])], ["picture", Image(data=PNG, caption="pic")]]))
+        report.chart("Ramp", {"U": ([0, 1, 2], [0.0, 2.5, 4.9])}, x_label="s", y_label="V")
+        report.chart("Bars", {"n": (["a", "b"], [1, 3])}, kind="bar")
+        report.chart("Dots", {"n": ([0, 1], [1, 3])}, kind="scatter")
+        report.image(Image(data=PNG, caption="scope"))
+        report.check(True, "U within limit")
         return True
 
 
 class FailsCheck(BaseTestCase):
     def test(self):
-        report().check(False, "U above 5.1 V")
+        report.check(False, "U above 5.1 V")
         return True
 
 

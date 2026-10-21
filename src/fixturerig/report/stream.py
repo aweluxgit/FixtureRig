@@ -9,7 +9,7 @@
 #
 # - The stream tracks the current context (open groups, running test) from
 #   the lifecycle events passing through it, and stamps every event with it.
-#   So `report().text("...")` needs no context arguments.
+#   So `report.text("...")` needs no context arguments.
 #
 # - The stream also remembers the verdicts reported during the current test,
 #   so the runner can fold them into the overall verdict.
@@ -23,11 +23,15 @@
 #   non-interleaved sequence.
 #
 # - Global access: the runner activates its stream for the duration of the
-#   run, and `report()` returns it. Outside a run, `report()` returns a
+#   run, and `current_stream()` returns it. Outside a run, it returns a
 #   default stream with a ConsoleReport, so a test class used as a library
 #   (or from a REPL) still shows its output. A plain module level variable is
 #   used rather than a ContextVar, because threads a test starts do not
 #   inherit ContextVars.
+#
+# - `report` is a proxy that forwards attribute access to `current_stream()`,
+#   so tests write `report.text(...)` instead of `report.text(...)` and a
+#   module level `from fixturerig.report import report` never goes stale.
 #
 
 from __future__ import annotations
@@ -220,7 +224,7 @@ class ReportStream:
 
     @contextmanager
     def activate(self) -> Iterator["ReportStream"]:
-        """Make this the stream returned by report() for the duration of the block."""
+        """Make this the stream returned by current_stream() for the duration of the block."""
         global _active
         previous = _active
         _active = self
@@ -235,17 +239,8 @@ _default: ReportStream | None = None
 _default_lock = threading.Lock()
 
 
-def report() -> ReportStream:
+def current_stream() -> ReportStream:
     """Return the report stream of the running test run.
-
-    Use it from a test to add content to every active report::
-
-        from fixturerig.report import report
-
-        def test(self):
-            report().text("Ramping supply")
-            report().table([["U", 4.9]], headers=["Signal", "Value"])
-            return report().check(voltage < self.limit, f"U = {voltage} V")
 
     Outside a run this returns a default stream that prints to the console.
     """
@@ -258,3 +253,33 @@ def report() -> ReportStream:
 
             _default = ReportStream([ConsoleReport()])
         return _default
+
+
+class _ReportProxy:
+    """Forwards every attribute access to current_stream()."""
+
+    __slots__ = ()
+
+    def __getattr__(self, name: str):
+        return getattr(current_stream(), name)
+
+    def __repr__(self) -> str:
+        return f"<report proxy for {current_stream()!r}>"
+
+
+report: ReportStream = _ReportProxy()  # type: ignore[assignment]
+"""The report stream of the running test run.
+
+Use it from a test to add content to every active report::
+
+    from fixturerig.report import report
+
+    def test(self):
+        report.text("Ramping supply")
+        report.table([["U", 4.9]], headers=["Signal", "Value"])
+        return report.check(voltage < self.limit, f"U = {voltage} V")
+
+It always forwards to current_stream(), so it can be imported once at module
+level and still reaches whichever stream is active when it is used. Outside a
+run it reports to a default stream that prints to the console.
+"""

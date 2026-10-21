@@ -13,6 +13,7 @@ from fixturerig.report import (
     TestFinished,
     TestStarted,
     Text,
+    current_stream,
     report,
 )
 from fixturerig.report import stream as stream_module
@@ -199,17 +200,17 @@ def test_reported_verdicts_are_tracked_per_test():
 def test_report_returns_active_stream_and_restores_previous():
     outer, inner = ReportStream(), ReportStream()
     with outer.activate():
-        assert report() is outer
+        assert current_stream() is outer
         with inner.activate():
-            assert report() is inner
-        assert report() is outer
-    assert report() is not outer
+            assert current_stream() is inner
+        assert current_stream() is outer
+    assert current_stream() is not outer
 
 
 def test_report_outside_a_run_prints_to_console(monkeypatch, capsys):
     monkeypatch.setattr(stream_module, "_default", None)
 
-    report().text("from a REPL")
+    report.text("from a REPL")
 
-    assert isinstance(report().modules[0], ConsoleReport)
+    assert isinstance(current_stream().modules[0], ConsoleReport)
     assert "from a REPL" in capsys.readouterr().out

@@ -4,7 +4,7 @@ import pytest
 
 from fixturerig.config.model import Fixture as FixtureEntry
 from fixturerig.config.model import TestCase as TestCaseEntry
-from fixturerig.core.inheritance import ArgumentMappingError, map_config_to_method_args
+from fixturerig.core.inheritance import ArgumentMappingError, map_config_to_method_args, map_config_to_methods
 from fixturerig.base.fixture import Fixture
 
 
@@ -269,3 +269,48 @@ def test_kwargs_without_matching_ancestor_param_raises():
 
     with pytest.raises(ArgumentMappingError, match="typo"):
         map_config_to_method_args({"power_supply": "psu1", "typo": "1"}, Mid)
+
+
+# --- mapping onto several methods -------------------------------------------
+
+
+def test_methods_each_get_the_params_they_name():
+    class Case:
+        def __init__(self, port: str):
+            pass
+
+        def setup(self, volt: float):
+            pass
+
+        def test(self, volt: float, limit: float):
+            pass
+
+    init, setup, test = map_config_to_methods(
+        {"port": "COM1", "volt": "4.5", "limit": 6}, [Case, Case.setup, Case.test]
+    )
+
+    assert init == {"port": "COM1"}
+    assert setup == {"volt": 4.5}
+    assert test == {"volt": 4.5, "limit": 6.0}
+
+
+def test_methods_unknown_param_is_one_no_method_takes():
+    def setup(a: int):
+        pass
+
+    def test(b: int):
+        pass
+
+    with pytest.raises(ArgumentMappingError, match=r"\['typo'\]"):
+        map_config_to_methods({"a": 1, "b": 2, "typo": 3}, [setup, test])
+
+
+def test_methods_missing_required_param_of_any_method_raises():
+    def setup(a: int):
+        pass
+
+    def test(b: int):
+        pass
+
+    with pytest.raises(ArgumentMappingError, match="'b'"):
+        map_config_to_methods({"a": 1}, [setup, test])

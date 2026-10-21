@@ -15,6 +15,13 @@
 #   only through type hints, so plain string parameters are never mistaken
 #   for references.
 #
+# - A testcase's config params are mapped onto the parameters of its
+#   __init__, setup(), test() and teardown() together (see
+#   map_config_to_methods in fixturerig.core.inheritance). Each method gets
+#   the params it names, so setup() and test() may both receive the same
+#   fixture or value; a param no method takes is an error. Fixtures are
+#   configured through __init__ only.
+#
 # - Fixtures are instantiated lazily, on first reference, and then shared by
 #   every later testcase (and fixture) that references the same name. On
 #   creation a fixture gets `setup()` and `self_test()`. A fixture that fails
@@ -40,12 +47,12 @@
 #     * any other exception from setup()/test() -> ERROR.
 #     * an exception from teardown() or a fixture's start()/stop() turns an
 #       otherwise PASSED result into ERROR; a worse verdict is kept.
-#     * a FAILED verdict the test reported through report().verdict() /
-#       report().check() turns an otherwise PASSED result into FAILED, so a
+#     * a FAILED verdict the test reported through report.verdict() /
+#       report.check() turns an otherwise PASSED result into FAILED, so a
 #       test can record several checks and still return True at the end.
 #
 # - Reporting (see fixturerig.report): the run reports into one ReportStream,
-#   which is activated for the whole run so report() inside tests and
+#   which is activated for the whole run so `report` inside tests and
 #   fixtures reaches it. The runner reports RunStarted/RunFinished around the
 #   run, GroupStarted/GroupFinished around every test group, and
 #   TestStarted/TestFinished around every testcase - also for testcases that
@@ -68,7 +75,7 @@ from fixturerig.config.model import Fixture as FixtureEntry
 from fixturerig.config.model import TestCase as TestCaseEntry
 from fixturerig.config.model import TestGroup
 from fixturerig.core.class_loader import ClassLoadError, load_class
-from fixturerig.core.inheritance import ArgumentMappingError, map_config_to_method_args
+from fixturerig.core.inheritance import ArgumentMappingError, map_config_to_method_args, map_config_to_methods
 from fixturerig.report.events import (
     GroupFinished,
     GroupStarted,
@@ -80,6 +87,9 @@ from fixturerig.report.events import (
 from fixturerig.report.stream import ReportStream
 
 logger = logging.getLogger(__name__)
+
+# Testcase methods whose parameters are filled from config, besides __init__.
+_TEST_METHODS = ("setup", "test", "teardown")
 
 # Statuses a testcase may report itself; the rest are reserved for the runner.
 _TEST_SETTABLE = {VerdictStatus.PASSED, VerdictStatus.FAILED, VerdictStatus.SKIPPED}
@@ -243,7 +253,8 @@ def run_test(
 
     Loads and instantiates the testcase class (resolving fixture references
     through `fixtures`), starts the fixtures it uses, then calls
-    setup() / test() / teardown() and classifies the outcome into a Verdict.
+    setup() / test() / teardown() - each with the config params it names -
+    and classifies the outcome into a Verdict.
     Never raises for test, configuration or fixture problems; those are
     reported in the returned TestResult and as a TestFinished event on
     `stream` (a stream without modules if none is given).
@@ -286,20 +297,24 @@ def _run_test(test: TestCaseEntry, fixtures: FixtureManager, stream: ReportStrea
         )
         return TestResult(test.name, verdict, duration)
 
+    if load_error is None and not callable(getattr(cls, "test", None)):
+        return result(Verdict(VerdictStatus.SKIPPED, f"{test.cls!r} has no test() method"))
+
     used: set[str] = set()
     try:
         if load_error is not None:
             raise load_error
-        kwargs = map_config_to_method_args(test, cls, fixtures.resolver(used))
+        methods = [name for name in _TEST_METHODS if callable(getattr(cls, name, None))]
+        init_kwargs, *method_kwargs = map_config_to_methods(
+            test, [cls, *(getattr(cls, name) for name in methods)], fixtures.resolver(used)
+        )
     except (ClassLoadError, ArgumentMappingError, FixtureError) as exc:
         logger.error("Test %s skipped: %s", test.name, exc)
         return result(Verdict(VerdictStatus.SKIPPED, str(exc)))
-
-    if not callable(getattr(cls, "test", None)):
-        return result(Verdict(VerdictStatus.SKIPPED, f"{test.cls!r} has no test() method"))
+    kwargs = dict(zip(methods, method_kwargs))
 
     try:
-        instance = cls(**kwargs)
+        instance = cls(**init_kwargs)
     except Exception as exc:
         logger.exception("Test %s could not be instantiated", test.name)
         return result(Verdict(VerdictStatus.ERROR, f"{test.cls}() raised {exc!r}"))
@@ -310,12 +325,12 @@ def _run_test(test: TestCaseEntry, fixtures: FixtureManager, stream: ReportStrea
         logger.exception("Test %s skipped: a fixture failed to start", test.name)
         return result(Verdict(VerdictStatus.SKIPPED, f"fixture start() failed: {exc}"))
 
-    verdict = _with_reported(_execute(instance, test.name), stream)
+    verdict = _with_reported(_execute(instance, test.name, kwargs), stream)
 
     cleanup_errors = []
-    if hasattr(instance, "teardown"):
+    if "teardown" in kwargs:
         try:
-            instance.teardown()
+            instance.teardown(**kwargs["teardown"])
         except Exception as exc:
             logger.exception("Test %s failed in teardown()", test.name)
             cleanup_errors.append(f"teardown() raised {exc!r}")
@@ -347,12 +362,15 @@ def _with_reported(verdict: Verdict, stream: ReportStream) -> Verdict:
     return Verdict(VerdictStatus.FAILED, f"{summary}: {'; '.join(messages)}" if messages else summary)
 
 
-def _execute(instance: Any, name: str) -> Verdict:
-    """Call setup() and test() on a testcase instance and classify the outcome."""
+def _execute(instance: Any, name: str, kwargs: dict[str, dict[str, Any]]) -> Verdict:
+    """Call setup() and test() on a testcase instance and classify the outcome.
+
+    `kwargs` holds the mapped config params per method name.
+    """
     try:
-        if hasattr(instance, "setup"):
-            instance.setup()
-        outcome = instance.test()
+        if "setup" in kwargs:
+            instance.setup(**kwargs["setup"])
+        outcome = instance.test(**kwargs["test"])
     except VerdictException as exc:
         return _classify(exc.verdict)
     except Exception as exc:
