@@ -1,0 +1,102 @@
+---
+- testcase:
+    name: "1: test"
+    class: tests.testcases_01.TestCase01
+    parametermap:
+      param1: 1
+      param2: 1
+      param3: 1
+- testgroup:
+    name: "group 1 reports"
+    entries:
+    - testcase:
+        name: "1.1: test charts"
+        class: tests.testcases_01.TestCase0101
+        parametermap:
+          param2: 1.0
+    - testcase:
+        name: "1.2: test tables"
+        class: tests.testcases_01.TestCase0102
+        parametermap:
+          dummy: "dummy"
+          param2: 1
+- testgroup:
+    name: "group 2 inheritance"
+    entries:
+    - testcase:
+        name: "2.1: test inheritance 1"
+        class: tests.testcases_02.TestCase0201
+        parametermap:
+          param1: 1
+          param2: 2
+    - testcase:
+        name: "2.2: test inheritance 2 without kwargs"
+        class: tests.testcases_02.TestCase0202
+        parametermap:
+          param1: 1
+          param2: 2
+          param3: 3
+    - testcase:
+        name: "2.3: test inheritance 3 with kwargs"
+        class: tests.testcases_02.TestCase0203
+        parametermap:
+          param1: 1
+          param2: 2
+          param3: 3
+- testgroup:
+    name: "group 3 verdicts"
+    entries:
+    - testcase:
+        name: "3.1: expect none: emitted no verdict"
+        class: tests.testcases_03.TestCase0301
+    - testgroup:
+        name: "group 3.2 verdicts emitted via report"
+        entries:
+        - testcase:
+            name: "3.2.1: expect passed: emitted passed verdict"
+            class: tests.testcases_03.TestCase030201
+        - testcase:
+            name: "3.2.2: expect failed: emitted failed verdict"
+            class: tests.testcases_03.TestCase030202
+        - testcase:
+            name: "3.2.3: expect error: emitted exception verdict"
+            class: tests.testcases_03.TestCase030203
+    - testgroup:
+        name: "group 3.3 verdicts returned by test()"
+        entries:
+        - testcase:
+            name: "3.3.1: expect passed: returned passed verdict"
+            class: tests.testcases_03.TestCase030301
+        - testcase:
+            name: "3.3.2: expect failed: returned failed verdict"
+            class: tests.testcases_03.TestCase030302
+        - testcase:
+            name: "3.3.3: expect error: returned exception verdict"
+            class: tests.testcases_03.TestCase030303
+        - testcase:
+            name: "3.3.4: expect passed: returned True (passed verdict)"
+            class: tests.testcases_03.TestCase030304
+        - testcase:
+            name: "3.3.5: expect failed: returned False (failed verdict)"
+            class: tests.testcases_03.TestCase030305
+    - testgroup:
+        name: "group 3.4 verdicts raised via exception"
+        entries:
+        - testcase:
+            name: "3.4.1: expect passed: raised passed verdict"
+            class: tests.testcases_03.TestCase030401
+        - testcase:
+            name: "3.4.2: expect failed: raised failed verdict"
+            class: tests.testcases_03.TestCase030402
+        - testcase:
+            name: "3.4.3: expect error: raised exception verdict"
+            class: tests.testcases_03.TestCase030403
+    - testgroup:
+        name: "group 3.5 report verdict precedence"
+        entries:
+        - testcase:
+            name: "3.5.1: expect failed: failed trumps passed"
+            class: tests.testcases_03.TestCase030501
+        - testcase:
+            name: "3.5.2: expect error: exception trumps passeed and failed"
+            class: tests.testcases_03.TestCase030502

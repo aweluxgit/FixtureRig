@@ -22,6 +22,13 @@
             "console": "integratedTerminal"
         },
         {
+            "name": "FixtureRig: integration tests",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "${workspaceFolder}/devtests/integration/run_integration_tests.sh",
+            "cwd": "${workspaceFolder}/devtests/integration"
+        },
+        {
             "name": "Python Debugger: Current File",
             "type": "debugpy",
             "request": "launch",

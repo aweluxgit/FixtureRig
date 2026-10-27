@@ -1,0 +1,20 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "FixtureRig: integration tests",
+            "type": "shell",
+            "command": "${workspaceFolder}/devtests/integration/run_integration_tests.sh",
+            "options": {
+                "cwd": "${workspaceFolder}/devtests/integration"
+            },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": []
+        }
+    ]
+}
