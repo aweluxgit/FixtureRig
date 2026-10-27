@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 from pathlib import Path
+from fixturerig import __version__
 from fixturerig.config.model import Config, ConfigError
 
 
@@ -38,6 +39,7 @@ class Args:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fixturerig", description="Run FixtureRig tests.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--config",
         dest="config_paths",

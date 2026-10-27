@@ -91,12 +91,5 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-
-    config = phase_configuration(argv)
-    #phase_run_generators(config)
-    phase_run_test(config)
-    #phase_finalize_reports(config)
-
-
 if __name__ == "__main__":
     sys.exit(main())

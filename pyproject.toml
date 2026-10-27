@@ -1,12 +1,25 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "fixturerig"
 version = "0.1.0"
 description = "Python-first, object-oriented test framework for hardware-in-the-loop (HIL) and physical-system testing."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Alexander Werth" }]
 requires-python = ">=3.10"
+keywords = ["testing", "hil", "hardware-in-the-loop", "test-framework", "fixtures"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
 dependencies = [
     "pyyaml>=6.0",
 ]
@@ -23,12 +36,23 @@ excel = [
 pdf = [
     "reportlab>=4.0",
 ]
+all = [
+    "openpyxl>=3.1",
+    "reportlab>=4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/aweluxgit/FixtureRig"
+Source = "https://github.com/aweluxgit/FixtureRig"
 
 [project.scripts]
 fixturerig = "fixturerig.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+fixturerig = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

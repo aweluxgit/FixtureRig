@@ -260,6 +260,24 @@ pytest
 
 A `FixtureRig: demo test_02` launch configuration in `.vscode/launch.json` runs the demo under the debugger.
 
+### Building a wheel
+
+```bash
+pip install build
+python -m build                      # writes dist/fixturerig-<version>-py3-none-any.whl and the sdist
+```
+
+Install the wheel into any virtual environment. Activating that environment puts the `fixturerig` command on `PATH`. On Windows, pip creates `.venv\Scripts\fixturerig.exe` for it:
+
+```bash
+pip install dist/fixturerig-0.1.0-py3-none-any.whl          # core only
+pip install "dist/fixturerig-0.1.0-py3-none-any.whl[all]"   # with Excel and PDF reports
+fixturerig --version
+python -m fixturerig --version      # equivalent, without the launcher
+```
+
+Other test systems can declare `fixturerig` (or `fixturerig[pdf]` etc.) as a normal dependency. The package ships a `py.typed` marker, so type checkers use its annotations.
+
 ## License
 
 [MIT](LICENSE) © 2026 Alexander Werth

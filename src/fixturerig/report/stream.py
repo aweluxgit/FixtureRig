@@ -215,6 +215,13 @@ class ReportStream:
         self.emit(VerdictEvent(verdict))
         return verdict
 
+
+    def passed(self, message: str = "") -> Verdict:
+        return self.verdict(VerdictStatus.PASSED, message)
+
+    def failed(self, message: str = "") -> Verdict:
+        return self.verdict(VerdictStatus.FAILED, message)
+
     def check(self, condition: bool, message: str = "") -> bool:
         """Report a passed/failed verdict for `condition` and return it."""
         self.verdict(bool(condition), message)

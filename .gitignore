@@ -10,3 +10,4 @@ dist/
 # Demo output
 demo/reports/
 demo/logs/
+devtests/integration/reports/
