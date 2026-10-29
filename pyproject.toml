@@ -32,6 +32,12 @@ dev = [
     "openpyxl>=3.1",
     "reportlab>=4.0",
 ]
+fixtures = [
+    "owon-psu>=0.0.6",
+]
+all = [
+    "fixturerig[fixtures]",
+]
 docs = [
     "sphinx>=7.2",
     "myst-parser>=2.0",

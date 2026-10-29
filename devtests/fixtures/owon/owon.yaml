@@ -1,0 +1,52 @@
+# Hardware tests for fixturerig.fixtures.power.owon.OwonPowerSupply.
+#
+# Needs an Owon SPE, SPM or P4000 series power supply with NOTHING connected
+# to its output, and the owon-psu package (pip install -e ".[fixtures]").
+# Set the port below, then run from the repository root:
+#
+#   python -m fixturerig --config devtests/fixtures/owon/owon.yaml
+- pythonpath: .
+
+- fixture:
+    name: psu
+    class: fixturerig.fixtures.power.owon.OwonPowerSupply
+    parametermap:
+      port: COM5    # /dev/ttyUSB0          # Windows: COM4
+      voltage: 5.0
+      current: 0.1
+      voltage_limit: 6.0
+      current_limit: 0.5
+      keylock: true
+
+- testgroup:
+    name: owon
+    entries:
+      - testcase:
+          name: identity
+          class: owon.Identity
+      - testcase:
+          name: configured settings
+          class: owon.ConfiguredSettings
+          parametermap:
+            tolerance: 0.01
+      - testcase:
+          name: setpoint readback
+          class: owon.SetpointReadback
+          parametermap:
+            voltages: [1.0, 3.3, 5.0]
+            currents: [0.05, 0.1, 0.15]
+            tolerance: 0.01
+      - testcase:
+          name: output switching
+          class: owon.OutputSwitching
+          parametermap:
+            measure_tolerance: 0.1
+            settle_time: 3.0
+            off_threshold: 0.5
+      - testcase:
+          name: voltage sweep
+          class: owon.VoltageSweep
+          parametermap:
+            voltages: [1.0, 2.0, 3.3, 5.0]
+            measure_tolerance: 0.1
+            settle_time: 3.0
