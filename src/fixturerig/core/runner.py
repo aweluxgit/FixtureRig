@@ -6,7 +6,8 @@
 #
 # - Tests run strictly in configuration order (a depth first walk of the
 #   config tree, i.e. the order of Config.testcases()). There is no
-#   reordering or parallelism.
+#   reordering or parallelism. option_only entries (see config/model.py) are
+#   skipped, like Config.testcases() skips them.
 #
 # - A testcase parameter whose type hint is a base.Fixture subclass is a
 #   reference to a configured fixture *by name*: the config value must be the
@@ -131,7 +132,7 @@ from typing import Any, Mapping
 from fixturerig.base.fixture import Fixture
 from fixturerig.base.step import Step as BaseStep
 from fixturerig.base.verdict import Verdict, VerdictException, VerdictStatus
-from fixturerig.config.model import Config, ConfigError
+from fixturerig.config.model import Config, ConfigError, is_active
 from fixturerig.config.model import Fixture as FixtureEntry
 from fixturerig.config.model import Generator as GeneratorEntry
 from fixturerig.config.model import Step as StepEntry
@@ -733,6 +734,8 @@ def _run_entries(
     With a `skip_reason`, every testcase is reported SKIPPED without running.
     """
     for entry in entries:
+        if not is_active(entry):
+            continue
         if isinstance(entry, TestCaseEntry):
             results.append(_run_test(entry, fixtures, stream, skip_reason))
         elif isinstance(entry, GeneratorEntry):

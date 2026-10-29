@@ -43,10 +43,18 @@
 #   "env_setup", "dut_info" and "dut_shutdown". Any other shape,
 #   key count, or kind is a ConfigError - misspelled keys are rejected, never
 #   silently ignored or dropped.
+# - No key of an entry body is required here. An entry may be completed by
+#   another entry with the same name path, in the same or a later file (see
+#   the merge rules in config/model.py), so a missing `name` or `class` is
+#   None in the model. read_config_files checks the merged model with
+#   Config.validate(): every active fixture, testcase, generator and step
+#   needs `name` and `class`, every active report `class`. Below, "required"
+#   means required by that check.
 # - fixture/testcase bodies accept exactly `name` (required), `class`
 #   (required), `parametermap` (optional mapping of literal values) and
 #   `parameterpath` (optional mapping of path parameters). fixture bodies
-#   additionally accept `autoloaded` (optional boolean, default false).
+#   additionally accept `autoloaded` (optional boolean, default false; None
+#   in the model when not given, so it doesn't override a merged value).
 #   `parameterlist` and typed params from the schema sketch above are not
 #   implemented yet; using them raises a clear ConfigError rather than being
 #   silently accepted or misparsed.
@@ -75,7 +83,8 @@
 #         parameterpath:
 #           path: ../reports/results.json
 # - generator bodies accept `name` and `class` (required), `parametermap`,
-#   `parameterpath` and `create_group` (optional boolean, default true), e.g.
+#   `parameterpath` and `create_group` (optional boolean, default true; None
+#   in the model when not given), e.g.
 #     - generator:
 #         name: voltage_sweep
 #         class: project.generators.VoltageSweep
@@ -96,6 +105,18 @@
 #   anonymous group, matching the sketch above) or a mapping of
 #   {name, entries} for a named group. Nested entries follow the same
 #   rules, recursively.
+# - testcase, generator and named testgroup bodies accept `option_only`
+#   (optional boolean, default false); see config/model.py for how such an
+#   entry is merged. An option_only entry is never checked by validate(),
+#   e.g. to change a parameter of a testcase declared in another file:
+#     - testgroup:
+#         name: regression
+#         option_only: true
+#         entries:
+#           - testcase: {name: t1, parametermap: {limit: 5.0}}
+#   Everything nested in an option_only group is option_only too: a nested
+#   `option_only: false` is a ConfigError, and so is any entry other than a
+#   testcase, testgroup or generator.
 # - Every parsed entry records the source file path; it is also stored on
 #   every ConfigPath as the default base for relative paths.
 
@@ -121,26 +142,20 @@ from fixturerig.config.model import (
     TestGroup,
 )
 
-_FIXTURE_REQUIRED_KEYS = {"name", "class"}
-_PARAM_KEYS = {"parametermap", "parameterpath"}
+# No key is required while parsing: an entry may be completed by another one
+# with the same name path. Config.validate() checks the merged model.
+_NAMED_KEYS = {"name", "class", "parametermap", "parameterpath"}
 _PARAMPATH_KEYS = {"path", "base_module", "base_path"}
 
-_FIXTURE_ALLOWED_KEYS = _FIXTURE_REQUIRED_KEYS | _PARAM_KEYS | {"autoloaded"}
+_FIXTURE_ALLOWED_KEYS = _NAMED_KEYS | {"autoloaded"}
+_TESTCASE_ALLOWED_KEYS = _NAMED_KEYS | {"traceability", "fixturemap", "option_only"}
+_REPORT_ALLOWED_KEYS = _NAMED_KEYS
+_GENERATOR_ALLOWED_KEYS = _NAMED_KEYS | {"create_group", "option_only"}
+_STEP_ALLOWED_KEYS = _NAMED_KEYS
+_TESTGROUP_ALLOWED_KEYS = {"name", "entries", "option_only"}
 
-_TESTCASE_REQUIRED_KEYS = {"name", "class"}
-_TESTCASE_ALLOWED_KEYS = _TESTCASE_REQUIRED_KEYS | _PARAM_KEYS | {"traceability", "fixturemap"}
-
-_REPORT_REQUIRED_KEYS = {"class"}
-_REPORT_ALLOWED_KEYS = _REPORT_REQUIRED_KEYS | _PARAM_KEYS | {"name"}
-
-_GENERATOR_REQUIRED_KEYS = {"name", "class"}
-_GENERATOR_ALLOWED_KEYS = _GENERATOR_REQUIRED_KEYS | _PARAM_KEYS | {"create_group"}
-
-_STEP_REQUIRED_KEYS = {"name", "class"}
-_STEP_ALLOWED_KEYS = _STEP_REQUIRED_KEYS | _PARAM_KEYS
-
-_TESTGROUP_REQUIRED_KEYS: set[str] = set()
-_TESTGROUP_ALLOWED_KEYS = _TESTGROUP_REQUIRED_KEYS | {"name", "entries"}
+# The entry kinds that can be option_only, and so may appear in an option_only group.
+_OPTION_KINDS = ("testcase", "testgroup", "generator")
 
 
 _KINDS = ", ".join(
@@ -176,14 +191,16 @@ def parse_yaml_file(path: str | Path) -> Config:
 def read_config_files(config, paths: list[str | Path]) -> Config:
     """Parse and merge multiple config files, in the order given.
 
-    See Config.extend for the (currently simple, append-only) merge rule.
+    See Config.extend for the merge rule. The merged config is then checked
+    with Config.validate().
     """
     for path in paths:
         config.extend(parse_yaml_file(path))
+    config.validate()
     return config
 
 
-def _parse_entry(item: Any, source: Path) -> ConfigEntry:
+def _parse_entry(item: Any, source: Path, in_option_group: bool = False) -> ConfigEntry:
     if not isinstance(item, dict) or len(item) != 1:
         raise ConfigError(
             f"{source}: each config entry must be a single-key mapping "
@@ -192,18 +209,24 @@ def _parse_entry(item: Any, source: Path) -> ConfigEntry:
 
     ((kind, body),) = item.items()
 
+    if in_option_group and kind not in _OPTION_KINDS:
+        raise ConfigError(
+            f"{source}: {kind} is not allowed inside an option_only testgroup, "
+            f"only {', '.join(repr(k) for k in _OPTION_KINDS)}"
+        )
+
     if kind == "fixture":
         return _parse_fixture(body, source)
     if kind == "testcase":
-        return _parse_testcase(body, source)
+        return _parse_testcase(body, source, in_option_group)
     if kind == "report":
         return _parse_report(body, source)
     if kind == "pythonpath":
         return PythonPath(path=_parse_path_value(body, source, "pythonpath"), source=source)
     if kind == "testgroup":
-        return _parse_testgroup(body, source)
+        return _parse_testgroup(body, source, in_option_group)
     if kind == "generator":
-        return _parse_generator(body, source)
+        return _parse_generator(body, source, in_option_group)
     if kind in STAGES:
         return _parse_step(kind, body, source)
 
@@ -216,15 +239,24 @@ def _require_mapping(body: Any, source: Path, kind: str) -> dict:
     return body
 
 
-def _check_keys(body: dict, allowed: set[str], required: set[str], source: Path, kind: str) -> None:
+def _check_keys(body: dict, allowed: set[str], source: Path, kind: str) -> None:
     unknown = set(body) - allowed
     if unknown:
         raise ConfigError(
             f"{source}: unknown key(s) {sorted(unknown)} in {kind}, allowed: {sorted(allowed)}"
         )
-    missing = required - set(body)
-    if missing:
-        raise ConfigError(f"{source}: {kind} missing required key(s) {sorted(missing)}")
+
+
+def _parse_option_only(body: dict, source: Path, kind: str, in_option_group: bool) -> bool:
+    option_only = body.get("option_only", in_option_group)
+    if not isinstance(option_only, bool):
+        raise ConfigError(f"{source}: {kind} option_only must be true or false, got {option_only!r}")
+    if in_option_group and not option_only:
+        raise ConfigError(
+            f"{source}: {kind} {body.get('name')!r} is inside an option_only testgroup "
+            f"and can't set option_only to false"
+        )
+    return option_only
 
 
 def _parse_params(body: dict, source: Path, kind: str) -> dict:
@@ -277,30 +309,32 @@ def _parse_path_value(value: Any, source: Path, what: str) -> ConfigPath:
 
 def _parse_fixture(body: Any, source: Path) -> Fixture:
     body = _require_mapping(body, source, "fixture")
-    _check_keys(body, _FIXTURE_ALLOWED_KEYS, _FIXTURE_REQUIRED_KEYS, source, "fixture")
-    autoloaded = body.get("autoloaded", False)
-    if not isinstance(autoloaded, bool):
+    _check_keys(body, _FIXTURE_ALLOWED_KEYS, source, "fixture")
+    autoloaded = body.get("autoloaded")
+    if autoloaded is not None and not isinstance(autoloaded, bool):
         raise ConfigError(f"{source}: fixture autoloaded must be true or false, got {autoloaded!r}")
     return Fixture(
-        name=body["name"],
-        cls=body["class"],
+        name=body.get("name"),
+        cls=body.get("class"),
         params=_parse_params(body, source, "fixture"),
         source=source,
         autoloaded=autoloaded,
     )
 
 
-def _parse_testcase(body: Any, source: Path) -> TestCase:
+def _parse_testcase(body: Any, source: Path, in_option_group: bool = False) -> TestCase:
     body = _require_mapping(body, source, "testcase")
-    _check_keys(body, _TESTCASE_ALLOWED_KEYS, _TESTCASE_REQUIRED_KEYS, source, "testcase")
+    option_only = _parse_option_only(body, source, "testcase", in_option_group)
+    _check_keys(body, _TESTCASE_ALLOWED_KEYS, source, "testcase")
     params = _parse_params(body, source, "testcase")
     return TestCase(
-        name=body["name"],
-        cls=body["class"],
+        name=body.get("name"),
+        cls=body.get("class"),
         params=params,
         source=source,
         traceability=_parse_traceability(body, source),
         fixturemap=_parse_fixturemap(body, params, source),
+        option_only=option_only,
     )
 
 
@@ -332,59 +366,62 @@ def _parse_traceability(body: dict, source: Path) -> list[str]:
 
 def _parse_report(body: Any, source: Path) -> Report:
     body = _require_mapping(body, source, "report")
-    _check_keys(body, _REPORT_ALLOWED_KEYS, _REPORT_REQUIRED_KEYS, source, "report")
+    _check_keys(body, _REPORT_ALLOWED_KEYS, source, "report")
     return Report(
-        cls=body["class"],
+        cls=body.get("class"),
         params=_parse_params(body, source, "report"),
         name=body.get("name"),
         source=source,
     )
 
 
-def _parse_generator(body: Any, source: Path) -> Generator:
+def _parse_generator(body: Any, source: Path, in_option_group: bool = False) -> Generator:
     body = _require_mapping(body, source, "generator")
-    _check_keys(body, _GENERATOR_ALLOWED_KEYS, _GENERATOR_REQUIRED_KEYS, source, "generator")
-    create_group = body.get("create_group", True)
-    if not isinstance(create_group, bool):
+    option_only = _parse_option_only(body, source, "generator", in_option_group)
+    _check_keys(body, _GENERATOR_ALLOWED_KEYS, source, "generator")
+    create_group = body.get("create_group")
+    if create_group is not None and not isinstance(create_group, bool):
         raise ConfigError(f"{source}: generator create_group must be true or false, got {create_group!r}")
     return Generator(
-        name=body["name"],
-        cls=body["class"],
+        name=body.get("name"),
+        cls=body.get("class"),
         params=_parse_params(body, source, "generator"),
         source=source,
         create_group=create_group,
+        option_only=option_only,
     )
 
 
 def _parse_step(stage: str, body: Any, source: Path) -> Step:
     body = _require_mapping(body, source, stage)
-    _check_keys(body, _STEP_ALLOWED_KEYS, _STEP_REQUIRED_KEYS, source, stage)
+    _check_keys(body, _STEP_ALLOWED_KEYS, source, stage)
     return Step(
         stage=stage,
-        name=body["name"],
-        cls=body["class"],
+        name=body.get("name"),
+        cls=body.get("class"),
         params=_parse_params(body, source, stage),
         source=source,
     )
 
 
-def _parse_testgroup(body: Any, source: Path) -> TestGroup:
+def _parse_testgroup(body: Any, source: Path, in_option_group: bool = False) -> TestGroup:
     if isinstance(body, list):
         # Anonymous group: `testgroup: [<entry>, ...]`.
-        nested = [_parse_entry(item, source) for item in body]
+        nested = [_parse_entry(item, source, in_option_group) for item in body]
         _check_no_steps(nested, source)
-        return TestGroup(entries=nested, name=None, source=source)
+        return TestGroup(entries=nested, name=None, source=source, option_only=in_option_group)
 
     body = _require_mapping(body, source, "testgroup")
-    _check_keys(body, _TESTGROUP_ALLOWED_KEYS, _TESTGROUP_REQUIRED_KEYS, source, "testgroup")
+    _check_keys(body, _TESTGROUP_ALLOWED_KEYS, source, "testgroup")
+    option_only = _parse_option_only(body, source, "testgroup", in_option_group)
     nested_body = body.get("entries", [])
     if not isinstance(nested_body, list):
         raise ConfigError(
             f"{source}: testgroup entries must be a list, got {type(nested_body).__name__}"
         )
-    nested = [_parse_entry(item, source) for item in nested_body]
+    nested = [_parse_entry(item, source, option_only) for item in nested_body]
     _check_no_steps(nested, source)
-    return TestGroup(entries=nested, name=body.get("name"), source=source)
+    return TestGroup(entries=nested, name=body.get("name"), source=source, option_only=option_only)
 
 
 def _check_no_steps(entries: list[ConfigEntry], source: Path) -> None:

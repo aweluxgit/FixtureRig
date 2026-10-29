@@ -624,3 +624,20 @@ def test_interactive_still_reports_verdicts_and_config_problems():
         VerdictStatus.SKIPPED,
         VerdictStatus.PASSED,
     ]
+
+
+def test_option_only_entries_are_not_run():
+    config = make_config(
+        TestGroup(name="options", entries=[TestCaseEntry(name="a", cls=cls_path(NoFixtureTest))], option_only=True),
+        TestCaseEntry(name="b", cls=None, option_only=True),
+        TestCaseEntry(name="c", cls=cls_path(NoFixtureTest)),
+    )
+
+    events = _events(config)
+
+    assert [(e.kind, e.path) for e in events if e.kind != "text"] == [
+        ("run_started", ()),
+        ("test_started", ("c",)),
+        ("test_finished", ("c",)),
+        ("run_finished", ()),
+    ]

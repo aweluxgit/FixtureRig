@@ -47,10 +47,44 @@
 #     * Resolved paths are absolute and normalized ("a/../b" -> "b"); they
 #       need not exist, so output paths can be configured.
 #
-# - No override/precedence behavior lives in this model yet. Merging
-#   multiple config files is simple append order (Config.extend); this is a
-#   deliberately small, explicit rule, not a stand-in for the full
-#   inherited/group/local precedence model called out as an open decision.
+# - Merging config (Config.extend, and within one file too) merges entries
+#   by name path: the names of the enclosing named groups plus the entry's
+#   own name (anonymous groups don't add to it). Fixtures, testcases, named
+#   testgroups, generators, steps (of the same stage) and named reports with
+#   the same kind and name path are one entry; the first one keeps its place.
+#   Anonymous groups, unnamed reports and pythonpaths are just appended. This
+#   is a deliberately small, explicit rule, not a stand-in for the full
+#   inherited/group/local precedence model called out as an open decision;
+#   there is no `precedence` field yet.
+#
+# - Because any entry can be completed by another one, no field is required
+#   while parsing: a missing `class` or `name` is None. Config.validate()
+#   checks the merged model instead: every active fixture, testcase,
+#   generator and step needs a name and a class, every active report a class.
+#   read_config_files calls it once all files are merged.
+#
+# - TestCase, TestGroup and Generator entries may be `option_only`. Such an
+#   entry is never run or expanded: walk() and the runner skip it together
+#   with everything nested in it, and validate() doesn't check it. It only
+#   contributes its fields to another entry with the same name path.
+#   merge_entries implements the rules, applied entry by entry in
+#   configuration order:
+#     * An entry with a new name path is added as it is; an option_only one
+#       stays inactive.
+#     * A later entry merges into the first earlier entry with the same name
+#       path, which keeps its place and its option_only flag...
+#     * ...except that a regular entry matching an earlier option_only entry
+#       takes that entry into its own place: they are merged and the result
+#       is active.
+#   Fields merge with the later entry's values on top, except that an
+#   earlier option_only entry's values win over a later regular entry's.
+#   Scalars (`class`, `autoloaded`, `create_group`) are replaced when given
+#   (not None), params and fixturemap entries replace those with the same
+#   name in either mapping, traceability IDs are added. Groups merge their
+#   entries recursively, with the same rules.
+#   Everything nested in an option_only group is option_only too, so it can
+#   only hold testcases, groups and generators (the parser enforces this).
+#   Entries created by generators are not merged.
 #
 # - A PythonPath entry is anonymous: it holds just one ConfigPath, a
 #   directory to put on sys.path so configured classes can be imported from
@@ -70,7 +104,8 @@
 # - A Generator entry configures a test generator class (see
 #   fixturerig.base.Generator and core/generator.py). It has a required
 #   `name` (so generators can be told apart when config files are merged), a
-#   `class`, params and a `create_group` flag (default True). Its `entries`
+#   `class`, params and a `create_group` flag (None, not configured, means
+#   True). Its `entries`
 #   hold what has been generated: empty until the generator runs, then a
 #   single TestGroup named after the generator that holds the returned
 #   entries - or, with create_group False, the returned entries themselves. Generated entries may only be TestCases,
@@ -218,30 +253,31 @@ ParamMap = dict[str, ParamValue]
 class Fixture:
     """A configured, reusable device or interface instance."""
 
-    name: str
-    cls: str
+    name: str | None
+    cls: str | None
     params: ParamMap = field(default_factory=dict)
     source: Path | None = None
-    autoloaded: bool = False
+    autoloaded: bool | None = None
 
 
 @dataclass
 class TestCase:
     """A configured test instance."""
 
-    name: str
-    cls: str
+    name: str | None
+    cls: str | None
     params: ParamMap = field(default_factory=dict)
     source: Path | None = None
     traceability: list[str] = field(default_factory=list)
     fixturemap: dict[str, str] = field(default_factory=dict)
+    option_only: bool = False
 
 
 @dataclass
 class Report:
     """A configured report module, attached to the run's report stream."""
 
-    cls: str
+    cls: str | None
     params: ParamMap = field(default_factory=dict)
     name: str | None = None
     source: Path | None = None
@@ -262,19 +298,21 @@ class TestGroup:
     entries: list["ConfigEntry"] = field(default_factory=list)
     name: str | None = None
     source: Path | None = None
+    option_only: bool = False
 
 
 @dataclass
 class Generator:
     """A configured test generator. Its `entries` are filled in when it runs."""
 
-    name: str
-    cls: str
+    name: str | None
+    cls: str | None
     params: ParamMap = field(default_factory=dict)
     source: Path | None = None
-    create_group: bool = True
+    create_group: bool | None = None
     entries: list["ConfigEntry"] = field(default_factory=list)
     generated: bool = False
+    option_only: bool = False
 
 
 # Lifecycle stages a Step can belong to, in the order they run. The
@@ -287,8 +325,8 @@ class Step:
     """A configured step of one lifecycle stage, e.g. flashing firmware in env_setup."""
 
     stage: str
-    name: str
-    cls: str
+    name: str | None
+    cls: str | None
     params: ParamMap = field(default_factory=dict)
     source: Path | None = None
 
@@ -307,19 +345,30 @@ class Config:
     entries: list[ConfigEntry] = field(default_factory=list)
 
     def extend(self, other: "Config") -> None:
-        """Append another Config's top level entries after this one's.
+        """Add another Config's top level entries after this one's.
 
-        This is the entire multi-file merge rule for now: later files'
-        entries come after earlier files' entries. See module docstring.
+        Later files' entries come after earlier files' entries, except that
+        entries with the same name path are merged (see merge_entries).
         """
-        self.entries.extend(other.entries)
+        merge_entries(self.entries, other.entries)
+
+    def validate(self) -> None:
+        """Check that every active entry is complete, once all config is merged.
+
+        :raises ConfigError: for an entry that lacks a required field.
+        """
+        for entry in self.walk():
+            for required in _REQUIRED.get(type(entry), ()):
+                if getattr(entry, required) is None:
+                    key = "class" if required == "cls" else required
+                    raise ConfigError(f"{entry.source}: {_describe(entry)} has no {key!r}")
 
     def walk(self) -> Iterator[ConfigEntry]:
-        """Yield every entry, including entries nested inside groups."""
-        for entry in self.entries:
-            yield entry
-            if isinstance(entry, (TestGroup, Generator)):
-                yield from _walk_entries(entry.entries)
+        """Yield every active entry, including entries nested inside groups.
+
+        option_only entries and everything nested in them are skipped.
+        """
+        yield from _walk_entries(self.entries)
 
     def fixtures(self) -> list[Fixture]:
         return [entry for entry in self.walk() if isinstance(entry, Fixture)]
@@ -349,6 +398,124 @@ class Config:
 
 def _walk_entries(entries: list[ConfigEntry]) -> Iterator[ConfigEntry]:
     for entry in entries:
+        if not is_active(entry):
+            continue
         yield entry
         if isinstance(entry, (TestGroup, Generator)):
             yield from _walk_entries(entry.entries)
+
+
+# The entry kinds that can be option_only.
+_OPTION_KINDS = (TestCase, TestGroup, Generator)
+
+# The fields Config.validate() requires of an active entry, per kind.
+_REQUIRED: dict[type, tuple[str, ...]] = {
+    Fixture: ("name", "cls"),
+    TestCase: ("name", "cls"),
+    Generator: ("name", "cls"),
+    Step: ("name", "cls"),
+    Report: ("cls",),
+}
+
+
+def _describe(entry: ConfigEntry) -> str:
+    kind = entry.stage if isinstance(entry, Step) else type(entry).__name__.lower()
+    return f"{kind} {entry.name!r}" if entry.name is not None else f"unnamed {kind}"
+
+
+def is_active(entry: ConfigEntry) -> bool:
+    """False for an option_only entry, which is never run or expanded."""
+    return not (isinstance(entry, _OPTION_KINDS) and entry.option_only)
+
+
+def merge_entries(entries: list[ConfigEntry], incoming: list[ConfigEntry]) -> None:
+    """Add `incoming` after `entries`, merging entries with the same name path.
+
+    `entries` is changed in place. See the module docstring for the rules.
+    """
+    for entry in incoming:
+        _merge_entry(entries, entries, entry)
+
+
+def _merge_entry(scope: list[ConfigEntry], place: list[ConfigEntry], entry: ConfigEntry) -> None:
+    """Merge `entry` with a match in `scope`, or append it to `place`."""
+    if isinstance(entry, TestGroup) and entry.name is None:
+        # An anonymous group doesn't add to the name path, so its entries are
+        # matched in the enclosing scope.
+        group = TestGroup(entries=[], name=None, source=entry.source, option_only=entry.option_only)
+        place.append(group)
+        for nested in entry.entries:
+            _merge_entry(scope, group.entries, nested)
+        return
+
+    key = _key(entry)
+    found = _find(scope, key) if key is not None else None
+    if found is None:
+        if isinstance(entry, TestGroup):
+            # Its own entries may have to be merged with one another.
+            nested, entry.entries = entry.entries, []
+            merge_entries(entry.entries, nested)
+        place.append(entry)
+        return
+    container, index = found
+    existing = container[index]
+    if not is_active(existing) and is_active(entry):
+        del container[index]
+        place.append(_activate(existing, entry))
+    else:
+        _overlay(existing, entry)
+
+
+def _key(entry: ConfigEntry) -> tuple | None:
+    """What identifies `entry` among its siblings, or None if it is never merged."""
+    if isinstance(entry, PythonPath) or entry.name is None:
+        return None
+    return (type(entry), entry.stage if isinstance(entry, Step) else None, entry.name)
+
+
+def _find(entries: list[ConfigEntry], key: tuple) -> tuple[list[ConfigEntry], int] | None:
+    """The first entry with `key` in `entries`, looking into anonymous groups."""
+    for index, candidate in enumerate(entries):
+        if _key(candidate) == key:
+            return entries, index
+        if isinstance(candidate, TestGroup) and candidate.name is None:
+            found = _find(candidate.entries, key)
+            if found is not None:
+                return found
+    return None
+
+
+def _activate(option: ConfigEntry, entry: ConfigEntry) -> ConfigEntry:
+    """Merge the earlier option_only entry `option` into the regular `entry`, option values winning."""
+    if isinstance(entry, TestGroup):
+        # Groups have no fields of their own to merge, so keep their entries
+        # in configuration order.
+        merge_entries(option.entries, entry.entries)
+        entry.entries = option.entries
+    else:
+        _overlay(entry, option)
+    return entry
+
+
+def _overlay(base: ConfigEntry, overlay: ConfigEntry) -> None:
+    """Merge `overlay`'s fields into `base`, overlay values winning."""
+    if isinstance(base, TestGroup):
+        merge_entries(base.entries, overlay.entries)
+        return
+    if overlay.cls is not None:
+        base.cls = overlay.cls
+    overlay_fixturemap = overlay.fixturemap if isinstance(overlay, TestCase) else {}
+    base.params = {
+        name: value for name, value in base.params.items() if name not in overlay_fixturemap
+    } | overlay.params
+    if isinstance(base, TestCase):
+        base.fixturemap = {
+            name: fixture for name, fixture in base.fixturemap.items() if name not in overlay.params
+        } | overlay.fixturemap
+        base.traceability = base.traceability + [
+            ref for ref in overlay.traceability if ref not in base.traceability
+        ]
+    if isinstance(base, Fixture) and overlay.autoloaded is not None:
+        base.autoloaded = overlay.autoloaded
+    if isinstance(base, Generator) and overlay.create_group is not None:
+        base.create_group = overlay.create_group

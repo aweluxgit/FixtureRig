@@ -115,3 +115,16 @@
         parametermap:
             prefix: "4.2"
             value: 7
+- testgroup:
+    name: "group 5 merged config files"
+    entries:
+    - testcase:
+        name: "5.1: test with merged paremeters"
+        class: tests.testcases_05.TestCase0501
+    - testcase:
+        name: "5.1: test with merged paremeters"
+        parametermap:
+            a: 1
+    - testcase:
+        name: "5.2: test with merged paremeters from other file"
+        class: tests.testcases_05.TestCase0502

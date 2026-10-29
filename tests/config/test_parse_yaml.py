@@ -146,11 +146,12 @@ def test_unknown_key_in_fixture_rejected(tmp_path):
         parse_yaml_file(path)
 
 
-def test_missing_required_key_rejected(tmp_path):
+def test_missing_class_is_rejected_after_merging(tmp_path):
     path = _write(tmp_path, "config.yaml", "- fixture:\n    name: can\n")
 
-    with pytest.raises(ConfigError, match="missing required key"):
-        parse_yaml_file(path)
+    assert parse_yaml_file(path).entries[0].cls is None
+    with pytest.raises(ConfigError, match="fixture 'can' has no 'class'"):
+        read_config_files(Config(entries=[]), [path])
 
 
 def test_parametermap_must_be_a_mapping(tmp_path):
@@ -236,7 +237,7 @@ def test_fixture_autoloaded(tmp_path):
     first, second = parse_yaml_file(path).entries
 
     assert first.autoloaded is True
-    assert second.autoloaded is False
+    assert second.autoloaded is None  # not configured: not autoloaded
 
 
 def test_fixture_autoloaded_must_be_a_boolean(tmp_path):
@@ -279,8 +280,8 @@ def test_generator_rejects_unknown_keys(tmp_path):
 
 def test_generator_requires_a_name(tmp_path):
     path = _write(tmp_path, "config.yaml", "- generator:\n    class: pkg.G\n")
-    with pytest.raises(ConfigError, match="missing required key"):
-        parse_yaml_file(path)
+    with pytest.raises(ConfigError, match="unnamed generator has no 'name'"):
+        read_config_files(Config(entries=[]), [path])
 
 
 def test_generator_create_group_must_be_a_bool(tmp_path):
@@ -332,8 +333,11 @@ def test_parses_lifecycle_steps(tmp_path):
 @pytest.mark.parametrize("stage", ["env_setup", "dut_info", "dut_shutdown"])
 def test_step_requires_name_and_class(tmp_path, stage):
     path = _write(tmp_path, "config.yaml", f"- {stage}:\n    class: pkg.S\n")
-    with pytest.raises(ConfigError, match="missing required key"):
-        parse_yaml_file(path)
+    with pytest.raises(ConfigError, match=f"unnamed {stage} has no 'name'"):
+        read_config_files(Config(entries=[]), [path])
+    path = _write(tmp_path, "config.yaml", f"- {stage}:\n    name: s\n")
+    with pytest.raises(ConfigError, match=f"{stage} 's' has no 'class'"):
+        read_config_files(Config(entries=[]), [path])
 
 
 def test_step_rejects_unknown_keys(tmp_path):
@@ -362,3 +366,201 @@ def test_dut_setup_is_not_an_entry_kind(tmp_path):
     path = _write(tmp_path, "config.yaml", "- dut_setup:\n    name: s\n    class: pkg.S\n")
     with pytest.raises(ConfigError, match="unknown config entry kind 'dut_setup'"):
         parse_yaml_file(path)
+
+
+def test_option_only_entries_need_no_class(tmp_path):
+    path = _write(
+        tmp_path,
+        "options.yaml",
+        """
+        - testcase:
+            name: t
+            option_only: true
+            parametermap:
+              limit: 5.0
+        - generator:
+            name: gen
+            option_only: true
+        - testgroup:
+            name: g
+            option_only: true
+        """,
+    )
+
+    testcase, generator, group = parse_yaml_file(path).entries
+
+    assert testcase == TestCase(name="t", cls=None, params={"limit": 5.0}, source=path, option_only=True)
+    assert generator.option_only and generator.cls is None and generator.create_group is None
+    assert group.option_only
+
+
+def test_active_entries_still_require_a_class(tmp_path):
+    path = _write(tmp_path, "c.yaml", "- testcase:\n    name: t\n    option_only: false\n")
+    with pytest.raises(ConfigError, match="testcase 't' has no 'class'"):
+        read_config_files(Config(entries=[]), [path])
+
+
+def test_option_only_entries_are_not_validated(tmp_path):
+    path = _write(tmp_path, "c.yaml", "- testcase:\n    name: t\n    option_only: true\n")
+    config = read_config_files(Config(entries=[]), [path])
+    assert config.testcases() == []
+
+
+def test_regular_entries_merge_across_files(tmp_path):
+    tests = _write(
+        tmp_path,
+        "test.yaml",
+        """
+        - fixture: {name: psu, class: pkg.Psu, parametermap: {port: COM1}}
+        - testgroup:
+            name: g
+            entries:
+              - testcase: {name: t, class: pkg.T, parametermap: {a: 1}}
+        - env_setup: {name: flash, class: pkg.Flash}
+        - dut_info: {name: flash, class: pkg.Info}
+        """,
+    )
+    more = _write(
+        tmp_path,
+        "test2.yaml",
+        """
+        - testgroup:
+            name: g
+            entries:
+              - testcase: {name: t, parametermap: {b: 2}}
+        - fixture: {name: psu, autoloaded: true, parametermap: {port: COM2}}
+        - env_setup: {name: flash, parametermap: {image: fw.bin}}
+        """,
+    )
+
+    config = read_config_files(Config(entries=[]), [tests, more])
+
+    (psu,) = config.fixtures()
+    assert (psu.cls, psu.params, psu.autoloaded, psu.source) == ("pkg.Psu", {"port": "COM2"}, True, tests)
+    (testcase,) = config.testcases()
+    assert (testcase.cls, testcase.params) == ("pkg.T", {"a": 1, "b": 2})
+    assert [(s.stage, s.cls, s.params) for s in config.steps()] == [
+        ("env_setup", "pkg.Flash", {"image": "fw.bin"}),
+        ("dut_info", "pkg.Info", {}),
+    ]
+
+
+def test_entry_can_be_completed_later_in_the_same_file(tmp_path):
+    path = _write(
+        tmp_path,
+        "c.yaml",
+        """
+        - testcase: {name: t, parametermap: {a: 1}}
+        - testcase: {name: t, class: pkg.T}
+        """,
+    )
+    (testcase,) = read_config_files(Config(entries=[]), [path]).testcases()
+    assert (testcase.cls, testcase.params) == ("pkg.T", {"a": 1})
+
+
+def test_option_only_must_be_a_bool(tmp_path):
+    path = _write(tmp_path, "c.yaml", "- testcase:\n    name: t\n    option_only: yes please\n")
+    with pytest.raises(ConfigError, match="option_only must be true or false"):
+        parse_yaml_file(path)
+
+
+def test_option_only_group_makes_nested_entries_option_only(tmp_path):
+    path = _write(
+        tmp_path,
+        "options.yaml",
+        """
+        - testgroup:
+            name: g
+            option_only: true
+            entries:
+              - testcase: {name: t}
+              - testgroup:
+                  - generator: {name: gen}
+        """,
+    )
+
+    (group,) = parse_yaml_file(path).entries
+    testcase, anonymous = group.entries
+
+    assert testcase.option_only
+    assert anonymous.option_only
+    assert anonymous.entries[0].option_only
+
+
+def test_option_only_false_inside_option_only_group_rejected(tmp_path):
+    path = _write(
+        tmp_path,
+        "c.yaml",
+        """
+        - testgroup:
+            name: g
+            option_only: true
+            entries:
+              - testcase: {name: t, class: pkg.T, option_only: false}
+        """,
+    )
+    with pytest.raises(ConfigError, match="can't set option_only to false"):
+        parse_yaml_file(path)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "fixture: {name: f, class: pkg.F}",
+        "report: {class: pkg.R}",
+        "pythonpath: ..",
+        "env_setup: {name: s, class: pkg.S}",
+    ],
+)
+def test_option_only_group_rejects_other_entry_kinds(tmp_path, entry):
+    path = _write(
+        tmp_path,
+        "c.yaml",
+        f"- testgroup:\n    name: g\n    option_only: true\n    entries:\n      - {entry}\n",
+    )
+    with pytest.raises(ConfigError, match="not allowed inside an option_only testgroup"):
+        parse_yaml_file(path)
+
+
+def test_option_only_not_allowed_on_fixtures(tmp_path):
+    path = _write(tmp_path, "c.yaml", "- fixture:\n    name: f\n    class: pkg.F\n    option_only: true\n")
+    with pytest.raises(ConfigError, match="unknown key"):
+        parse_yaml_file(path)
+
+
+def test_read_config_files_merges_option_only_entries(tmp_path):
+    options = _write(
+        tmp_path,
+        "options.yaml",
+        """
+        - testgroup:
+            name: regression
+            option_only: true
+            entries:
+              - testcase:
+                  name: t1
+                  traceability: REQ-9
+                  parametermap: {limit: 5.0}
+        """,
+    )
+    tests = _write(
+        tmp_path,
+        "test.yaml",
+        """
+        - testcase: {name: first, class: pkg.First}
+        - testgroup:
+            name: regression
+            entries:
+              - testcase: {name: t1, class: pkg.T1, parametermap: {limit: 4.5, value: 1}}
+              - testcase: {name: t2, class: pkg.T2}
+        """,
+    )
+
+    config = read_config_files(Config(entries=[]), [options, tests])
+
+    assert [entry.name for entry in config.walk()] == ["first", "regression", "t1", "t2"]
+    t1 = config.testcases()[1]
+    assert t1.cls == "pkg.T1"
+    assert t1.params == {"limit": 5.0, "value": 1}
+    assert t1.traceability == ["REQ-9"]
+    assert t1.source == tests

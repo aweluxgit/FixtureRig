@@ -28,6 +28,9 @@
 #   In interactive mode (see core/runner.py) an exception from the
 #   generator's __init__ or generate() is re-raised as it is instead.
 #
+# - option_only generators, and generators nested in option_only groups, are
+#   not expanded (see config/model.py).
+#
 # - Expansion happens once per generator (`Generator.generated`), so calling
 #   expand_generators again - e.g. from a second run of the same config - is a
 #   no-op for generators that have already run.
@@ -38,7 +41,7 @@ from __future__ import annotations
 import logging
 
 from fixturerig.base.generator import Generator as BaseGenerator
-from fixturerig.config.model import Config, ConfigEntry, ConfigError
+from fixturerig.config.model import Config, ConfigEntry, ConfigError, is_active
 from fixturerig.config.model import Generator as GeneratorEntry
 from fixturerig.config.model import TestCase as TestCaseEntry
 from fixturerig.config.model import TestGroup
@@ -61,6 +64,8 @@ def expand_generators(config: Config, interactive: bool = False) -> None:
 
 def _expand_entries(entries: list[ConfigEntry], interactive: bool) -> None:
     for entry in entries:
+        if not is_active(entry):
+            continue
         if isinstance(entry, GeneratorEntry):
             if not entry.generated:
                 _generate(entry, interactive)
@@ -100,7 +105,7 @@ def _generate(entry: GeneratorEntry, interactive: bool) -> None:
         _set_source(item, entry)
     logger.info("Generator %s generated %d entries", label, len(generated))
 
-    if entry.create_group:
+    if entry.create_group is not False:  # None: not configured, the default
         generated = [TestGroup(entries=generated, name=entry.name, source=entry.source)]
     entry.entries = generated
     entry.generated = True

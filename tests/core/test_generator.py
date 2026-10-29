@@ -175,3 +175,15 @@ def test_run_tests_runs_generated_tests_in_place():
 def test_interactive_generator_exception_is_raised_as_it_is():
     with pytest.raises(RuntimeError, match="boom"):
         expand_generators(Config(entries=[Generator(name="gen", cls=cls_path(Crashes))]), interactive=True)
+
+
+def test_option_only_generators_are_not_expanded():
+    COUNT["calls"] = 0
+    option = Generator(name="counting", cls=cls_path(Counting), option_only=True)
+    nested = Generator(name="nested", cls=cls_path(Counting))
+    config = Config(entries=[option, TestGroup(name="g", entries=[nested], option_only=True)])
+
+    expand_generators(config)
+
+    assert COUNT["calls"] == 0
+    assert not option.generated and not nested.generated

@@ -17,7 +17,7 @@ for DIR in "$ROOT"/testset_*/; do
     if [ -f "$DIR/run_testset.sh" ]; then
         (cd "$DIR" && bash ./run_testset.sh "$PYTHON")
     else
-        (cd "$DIR" && "$PYTHON" -m fixturerig --config config/env.yaml --config config/test.yaml)
+        (cd "$DIR" && "$PYTHON" -m fixturerig --config config/env.yaml --config config/test.yaml --config config/test2.yaml)
     fi
     CODE=$?
     if [ "$CODE" -ne 0 ]; then

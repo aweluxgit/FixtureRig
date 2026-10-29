@@ -4,7 +4,7 @@ import pytest
 
 from fixturerig.base import Fixture
 from fixturerig.config.model import Config, ConfigError, Report, TestCase, TestGroup
-from fixturerig.config.parse_yaml import parse_yaml_file
+from fixturerig.config.parse_yaml import parse_yaml_file, read_config_files
 from fixturerig.report import ColoredConsoleReport, ConsoleReport, ReportModule
 from fixturerig.report.json_report import JsonReport
 from fixturerig.report.loader import build_report_stream, create_report_module
@@ -70,14 +70,14 @@ def test_parse_report_entry_and_traceability(tmp_path):
 @pytest.mark.parametrize(
     "body, message",
     [
-        ("- report:\n    name: x\n", "missing required key"),
+        ("- report:\n    name: x\n", "report 'x' has no 'class'"),
         ("- report:\n    class: a.B\n    pathx: 1\n", "unknown key"),
         ("- testcase:\n    name: t\n    class: a.B\n    traceability: {a: 1}\n", "traceability"),
     ],
 )
 def test_parse_rejects_invalid_report_and_traceability(tmp_path, body, message):
     with pytest.raises(ConfigError, match=message):
-        parse_yaml_file(_write(tmp_path, body))
+        read_config_files(Config(entries=[]), [_write(tmp_path, body)])
 
 
 # --- module creation -------------------------------------------------------------

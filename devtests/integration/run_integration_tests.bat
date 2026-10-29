@@ -19,7 +19,7 @@ for /d %%D in ("%ROOT%testset_*") do (
     if exist "run_testset.bat" (
         call run_testset.bat "%PYTHON%"
     ) else (
-        "%PYTHON%" -m fixturerig --config config\env.yaml --config config\test.yaml
+        "%PYTHON%" -m fixturerig --config config\env.yaml --config config\test.yaml --config config\test2.yaml
     )
     if errorlevel 1 (
         echo %%~nxD exited with code !errorlevel!

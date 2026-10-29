@@ -53,6 +53,32 @@ Otherwise the dictionary can have these entries:
 
 If the value for a parampath is a string and not a dict then it's a shorthand for the path field of the parampath entry.
 
+## Merging and option_only
+
+Entries with the same kind and name path are merged into one, within a file and across files. The name path is the names of the enclosing named groups plus the entry's own name; anonymous groups don't count.
+Fixtures, testcases, named testgroups, generators, steps (same stage) and named reports merge; unnamed reports and pythonpaths are just appended.
+No key is required while parsing. After all files are merged, `Config.validate()` (called by `read_config_files`) checks that every active fixture, testcase, generator and step has `name` and `class`, and every active report `class`.
+
+`testcase`, `testgroup` and `generator` entries accept `option_only` (default `false`).
+An option_only entry is never run or expanded and is not validated; it only merges its fields into the entry with the same name path.
+
+Merge rules, applied entry by entry in config order:
+- An entry with a new name path is added (an option_only one stays inactive).
+- A later entry merges into the first earlier entry with the same name path; that entry keeps its place and its option_only flag.
+- Except: a regular entry matching an earlier option_only entry takes it in; the merged entry sits at the regular entry's place and is active.
+
+The later entry's values win, except that an option_only entry's values win over a later regular entry's: `class`, `autoloaded` and `create_group` replace when given, parametermap/parameterpath/fixturemap entries replace those with the same name, traceability IDs are added, groups merge their entries recursively.
+Everything nested in an option_only group is option_only too, so it may only hold testcases, testgroups and generators.
+A `precedence` field to control which entry wins is planned but not implemented.
+
+```yaml
+- testgroup:
+    name: regression
+    option_only: true
+    entries:
+      - testcase: {name: t1, parametermap: {limit: 5.0}}
+```
+
 ## fixturemap
 
 A testcase can have a `fixturemap` entry. Its keys are parameter names of the test, its values are the names of configured fixtures.
