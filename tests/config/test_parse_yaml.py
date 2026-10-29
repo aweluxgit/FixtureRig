@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from fixturerig.config.model import Config, ConfigError, Fixture, TestCase, TestGroup
+from fixturerig.config.model import Config, ConfigError, Fixture, Generator, TestCase, TestGroup
 from fixturerig.config.parse_yaml import parse_yaml_file, read_config_files
 
 
@@ -176,3 +176,114 @@ def test_load_config_merges_files_in_order(tmp_path):
     config = read_config_files(Config(entries=[]), [first, second])
 
     assert [entry.name for entry in config.entries] == ["a", "b"]
+
+
+def test_testcase_fixturemap(tmp_path):
+    path = _write(
+        tmp_path,
+        "config.yaml",
+        """
+        - testcase:
+            name: t
+            class: pkg.Test
+            fixturemap:
+              power_supply: psu_bench_2
+            parametermap:
+              limit: 4.5
+        """,
+    )
+
+    (entry,) = parse_yaml_file(path).entries
+
+    assert entry.fixturemap == {"power_supply": "psu_bench_2"}
+    assert entry.params == {"limit": 4.5}
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ("    fixturemap: [psu]\n", "fixturemap must be a mapping"),
+        ("    fixturemap: {psu: 3}\n", "must map parameter names to fixture names"),
+        ("    fixturemap: {psu: a}\n    parametermap: {psu: b}\n", "both fixturemap and parametermap"),
+    ],
+)
+def test_invalid_fixturemap_rejected(tmp_path, body, message):
+    path = _write(tmp_path, "config.yaml", "- testcase:\n    name: t\n    class: pkg.Test\n" + body)
+
+    with pytest.raises(ConfigError, match=message):
+        parse_yaml_file(path)
+
+
+def test_fixturemap_only_allowed_on_testcases(tmp_path):
+    path = _write(
+        tmp_path,
+        "config.yaml",
+        "- fixture:\n    name: can\n    class: pkg.Can\n    fixturemap: {a: b}\n",
+    )
+
+    with pytest.raises(ConfigError, match="unknown key"):
+        parse_yaml_file(path)
+
+
+def test_fixture_autoloaded(tmp_path):
+    path = _write(
+        tmp_path,
+        "config.yaml",
+        "- fixture:\n    name: a\n    class: pkg.A\n    autoloaded: true\n"
+        "- fixture:\n    name: b\n    class: pkg.B\n",
+    )
+
+    first, second = parse_yaml_file(path).entries
+
+    assert first.autoloaded is True
+    assert second.autoloaded is False
+
+
+def test_fixture_autoloaded_must_be_a_boolean(tmp_path):
+    path = _write(tmp_path, "config.yaml", "- fixture:\n    name: a\n    class: pkg.A\n    autoloaded: yes please\n")
+
+    with pytest.raises(ConfigError, match="autoloaded must be true or false"):
+        parse_yaml_file(path)
+
+
+def test_parses_generator(tmp_path):
+    path = _write(
+        tmp_path,
+        "config.yaml",
+        """
+        - generator:
+            name: sweep
+            class: project.generators.Sweep
+            parametermap:
+              values: [1, 2]
+        - generator:
+            name: other
+            class: project.generators.Other
+            create_group: false
+        """,
+    )
+
+    config = parse_yaml_file(path)
+
+    assert config.entries == [
+        Generator(name="sweep", cls="project.generators.Sweep", params={"values": [1, 2]}, source=path),
+        Generator(name="other", cls="project.generators.Other", source=path, create_group=False),
+    ]
+
+
+def test_generator_rejects_unknown_keys(tmp_path):
+    path = _write(tmp_path, "config.yaml", "- generator:\n    name: g\n    class: pkg.G\n    entries: []\n")
+    with pytest.raises(ConfigError, match="unknown key"):
+        parse_yaml_file(path)
+
+
+def test_generator_requires_a_name(tmp_path):
+    path = _write(tmp_path, "config.yaml", "- generator:\n    class: pkg.G\n")
+    with pytest.raises(ConfigError, match="missing required key"):
+        parse_yaml_file(path)
+
+
+def test_generator_create_group_must_be_a_bool(tmp_path):
+    path = _write(tmp_path, "config.yaml", "- generator:\n    name: g\n    class: pkg.G\n    create_group: maybe\n")
+    with pytest.raises(ConfigError, match="create_group must be true or false"):
+        parse_yaml_file(path)

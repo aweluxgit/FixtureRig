@@ -5,7 +5,8 @@
 # Constraints and Open Decisions", for the open items these narrow down):
 #
 # - A config document is a flat or nested list of entries. Every entry is
-#   exactly one of a Fixture, a TestCase, a Report, a PythonPath, or a TestGroup. Groups nest other
+#   exactly one of a Fixture, a TestCase, a Report, a PythonPath, a TestGroup
+#   or a Generator. Groups nest other
 #   entries but are not themselves tests - see high-level-design's
 #   "Test groups should support hierarchy... organizational and should not
 #   themselves count as tests".
@@ -65,6 +66,28 @@
 # - A TestCase may carry `traceability`: a list of opaque IDs into a test
 #   management tool (e.g. "JIRA-123"). They are reported with the test and
 #   not interpreted by the framework.
+#
+# - A Generator entry configures a test generator class (see
+#   fixturerig.base.Generator and core/generator.py). It has a required
+#   `name` (so generators can be told apart when config files are merged), a
+#   `class`, params and a `create_group` flag (default True). Its `entries`
+#   hold what has been generated: empty until the generator runs, then a
+#   single TestGroup named after the generator that holds the returned
+#   entries - or, with create_group False, the returned entries themselves. Generated entries may only be TestCases,
+#   TestGroups and Generators (nested generators are expanded too), so
+#   generators never add fixtures, reports or pythonpaths. `generated` records
+#   that the generator has run, so expansion happens exactly once.
+#
+# - A Fixture may be `autoloaded` (the design notes also call these
+#   "persistent" fixtures). An autoloaded fixture is created at the very
+#   start of the run, before any other entry is executed, and behaves as if
+#   every testcase required it under its configured name (see
+#   core/runner.py).
+#
+# - A TestCase may carry a `fixturemap`: {test parameter name: configured
+#   fixture name}, for a fixture parameter whose name differs from the
+#   fixture's configured name. It is kept apart from `params` so a mapped
+#   name can only ever resolve to a fixture, never be passed as a string.
 #
 
 from __future__ import annotations
@@ -190,6 +213,7 @@ class Fixture:
     cls: str
     params: ParamMap = field(default_factory=dict)
     source: Path | None = None
+    autoloaded: bool = False
 
 
 @dataclass
@@ -201,6 +225,7 @@ class TestCase:
     params: ParamMap = field(default_factory=dict)
     source: Path | None = None
     traceability: list[str] = field(default_factory=list)
+    fixturemap: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -230,7 +255,20 @@ class TestGroup:
     source: Path | None = None
 
 
-ConfigEntry = Union[Fixture, TestCase, Report, PythonPath, TestGroup]
+@dataclass
+class Generator:
+    """A configured test generator. Its `entries` are filled in when it runs."""
+
+    name: str
+    cls: str
+    params: ParamMap = field(default_factory=dict)
+    source: Path | None = None
+    create_group: bool = True
+    entries: list["ConfigEntry"] = field(default_factory=list)
+    generated: bool = False
+
+
+ConfigEntry = Union[Fixture, TestCase, Report, PythonPath, TestGroup, Generator]
 
 
 @dataclass
@@ -251,7 +289,7 @@ class Config:
         """Yield every entry, including entries nested inside groups."""
         for entry in self.entries:
             yield entry
-            if isinstance(entry, TestGroup):
+            if isinstance(entry, (TestGroup, Generator)):
                 yield from _walk_entries(entry.entries)
 
     def fixtures(self) -> list[Fixture]:
@@ -263,6 +301,9 @@ class Config:
     def reports(self) -> list[Report]:
         return [entry for entry in self.walk() if isinstance(entry, Report)]
 
+    def generators(self) -> list[Generator]:
+        return [entry for entry in self.walk() if isinstance(entry, Generator)]
+
     def python_paths(self) -> list[PythonPath]:
         return [entry for entry in self.walk() if isinstance(entry, PythonPath)]
 
@@ -270,5 +311,5 @@ class Config:
 def _walk_entries(entries: list[ConfigEntry]) -> Iterator[ConfigEntry]:
     for entry in entries:
         yield entry
-        if isinstance(entry, TestGroup):
+        if isinstance(entry, (TestGroup, Generator)):
             yield from _walk_entries(entry.entries)

@@ -13,7 +13,9 @@
 #   `name` of a `fixture` entry. This is the smallest coherent answer to
 #   "What syntax identifies a reference to another fixture?" and is enforced
 #   only through type hints, so plain string parameters are never mistaken
-#   for references.
+#   for references. A required fixture parameter the config does not name is
+#   resolved by its own parameter name; a testcase `fixturemap` maps a
+#   parameter to a fixture with a different name (see core/inheritance.py).
 #
 # - A testcase's config params are mapped onto the parameters of its
 #   __init__, setup(), test() and teardown() together (see
@@ -27,6 +29,15 @@
 #   creation a fixture gets `setup()` and `self_test()`. A fixture that fails
 #   either is remembered as broken, so later tests that need it are skipped
 #   immediately instead of retrying the hardware.
+#
+# - Autoloaded fixtures (`autoloaded: true`) are the exception to lazy
+#   creation: run_tests creates them, in configuration order, right at the
+#   start of the run - before any other entry (including the planned
+#   env_setup entries) is executed. After that they behave as if every
+#   testcase required them under their configured name: they are started and
+#   stopped around every testcase, and a broken autoloaded fixture skips
+#   every testcase. A testcase may still name one explicitly to get a
+#   reference to it; nothing else changes.
 #
 # - Per testcase, the fixtures it references are `start()`ed before the
 #   testcase's `setup()` and `stop()`ped after its `teardown()`. Fixtures the
@@ -59,6 +70,13 @@
 #   are skipped before they run. TestStarted carries the test specification:
 #   class, class docstring, configured params and traceability IDs.
 #
+# - Generators (see core/generator.py) are expanded by run_tests before
+#   anything else, unless that already happened (main.py runs them as their
+#   own phase). The runner then treats a Generator node like an anonymous
+#   group: it runs the generated entries in place and reports no group
+#   boundaries of its own - unless create_group is off, the generated
+#   entries are already wrapped in a TestGroup, which is reported as usual.
+#
 
 from __future__ import annotations
 
@@ -72,9 +90,11 @@ from fixturerig.base.fixture import Fixture
 from fixturerig.base.verdict import Verdict, VerdictException, VerdictStatus
 from fixturerig.config.model import Config, ConfigError
 from fixturerig.config.model import Fixture as FixtureEntry
+from fixturerig.config.model import Generator as GeneratorEntry
 from fixturerig.config.model import TestCase as TestCaseEntry
 from fixturerig.config.model import TestGroup
 from fixturerig.core.class_loader import ClassLoadError, load_class
+from fixturerig.core.generator import run_generators
 from fixturerig.core.inheritance import ArgumentMappingError, map_config_to_method_args, map_config_to_methods
 from fixturerig.report.events import (
     GroupFinished,
@@ -121,6 +141,7 @@ class FixtureManager:
             if entry.name in self._entries:
                 raise ConfigError(f"Fixture {entry.name!r} is configured more than once")
             self._entries[entry.name] = entry
+        self._autoloaded = [name for name, entry in self._entries.items() if entry.autoloaded]
         self._instances: dict[str, Fixture] = {}  # insertion order == creation order
         self._broken: dict[str, str] = {}
         self._creating: list[str] = []
@@ -137,6 +158,27 @@ class FixtureManager:
             return instance
 
         return instantiate_fixture
+
+    def load_autoloaded(self) -> None:
+        """Create every autoloaded fixture, in configuration order.
+
+        A fixture that cannot be created is logged and remembered as broken;
+        require_autoloaded() then skips every testcase.
+        """
+        for name in self._autoloaded:
+            try:
+                self.get(name)
+            except FixtureError:
+                logger.exception("Autoloaded fixture %r is unavailable", name)
+
+    def require_autoloaded(self, used: set[str]) -> None:
+        """Add every autoloaded fixture to `used`, as if the testcase had required it.
+
+        :raises FixtureError: if an autoloaded fixture is unavailable.
+        """
+        for name in self._autoloaded:
+            self.get(name)
+            used.add(name)
 
     def get(self, name: str) -> Fixture:
         """Return the fixture instance for `name`, creating and setting it up on first use."""
@@ -304,6 +346,7 @@ def _run_test(test: TestCaseEntry, fixtures: FixtureManager, stream: ReportStrea
     try:
         if load_error is not None:
             raise load_error
+        fixtures.require_autoloaded(used)
         methods = [name for name in _TEST_METHODS if callable(getattr(cls, name, None))]
         init_kwargs, *method_kwargs = map_config_to_methods(
             test, [cls, *(getattr(cls, name) for name in methods)], fixtures.resolver(used)
@@ -400,17 +443,21 @@ def _classify(outcome: Any) -> Verdict:
 def run_tests(config: Config, report_stream: ReportStream | None = None) -> list[TestResult]:
     """Run every configured testcase in configuration order and return the results.
 
+    Generators that have not run yet are expanded first (see run_generators).
+
     Everything the run and its tests report goes to `report_stream`. The
     caller owns the stream and closes it (see main.py); without one the run
     reports into a stream that has no modules.
     """
     stream = report_stream if report_stream is not None else ReportStream()
+    run_generators(config)
     fixtures = FixtureManager(config)
     results: list[TestResult] = []
     start_time = time.perf_counter()
     with stream.activate():
         stream.emit(RunStarted())
         try:
+            fixtures.load_autoloaded()
             _run_entries(config.entries, fixtures, stream, results)
         finally:
             fixtures.teardown_all()
@@ -429,6 +476,8 @@ def _run_entries(entries, fixtures: FixtureManager, stream: ReportStream, result
     for entry in entries:
         if isinstance(entry, TestCaseEntry):
             results.append(_run_test(entry, fixtures, stream))
+        elif isinstance(entry, GeneratorEntry):
+            _run_entries(entry.entries, fixtures, stream, results)
         elif isinstance(entry, TestGroup):
             start_time = time.perf_counter()
             stream.emit(GroupStarted(name=entry.name))

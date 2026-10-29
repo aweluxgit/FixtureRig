@@ -100,3 +100,18 @@
         - testcase:
             name: "3.5.2: expect error: exception trumps passeed and failed"
             class: tests.testcases_03.TestCase030502
+- testgroup:
+    name: "group 4 generators"
+    entries:
+    - generator:
+        name: "4.1: generator that adds a few tests"
+        class: tests.testcases_04.Generator0401
+        parametermap:
+            count: 3
+    - generator:
+        name: "4.2: generator that doesn't create a group for created tests"
+        class: tests.testcases_04.Generator0402
+        create_group: false
+        parametermap:
+            prefix: "4.2"
+            value: 7

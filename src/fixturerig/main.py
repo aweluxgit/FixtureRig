@@ -26,6 +26,7 @@ from fixturerig.config.model import Config, ConfigError
 from fixturerig.config.parse_args import Args, ArgsError, read_config_from_args, read_app_args
 from fixturerig.config.parse_yaml import read_config_files
 from fixturerig.core.class_loader import add_python_paths
+from fixturerig.core.generator import run_generators
 from fixturerig.core.runner import run_tests
 from fixturerig.report.loader import build_report_stream
 from fixturerig.report.stream import ReportStream
@@ -77,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
         add_python_paths(config)
         report_stream = prepare_reports(config)
         try:
-            # run_generators(config)
+            run_generators(config)
             run_tests(config, report_stream)
         finally:
             finalize_reports(report_stream)

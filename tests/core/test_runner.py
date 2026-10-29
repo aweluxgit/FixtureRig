@@ -247,6 +247,62 @@ def test_run_tests_unused_fixture_is_never_created():
     assert CALLS == ["nofixture.test"]
 
 
+
+# --- autoloaded fixtures -------------------------------------------------------
+
+
+def autoloaded_psu(**params) -> FixtureEntry:
+    return FixtureEntry(name="psu", cls=cls_path(Psu), params=params, autoloaded=True)
+
+
+def test_autoloaded_fixture_is_created_before_the_first_test():
+    run_tests(make_config(TestCaseEntry(name="c", cls=cls_path(NoFixtureTest)), autoloaded_psu()))
+    assert CALLS[:3] == ["psu.setup:COM1", "psu.self_test", "psu.start"]
+
+
+def test_autoloaded_fixture_is_created_without_any_tests():
+    run_tests(make_config(autoloaded_psu()))
+    assert CALLS == ["psu.setup:COM1", "psu.self_test", "psu.disconnect", "psu.teardown"]
+
+
+def test_autoloaded_fixture_is_started_and_stopped_for_every_test():
+    config = make_config(
+        autoloaded_psu(),
+        TestCaseEntry(name="a", cls=cls_path(NoFixtureTest)),
+        limit_test("b", limit=5),
+    )
+
+    results = run_tests(config)
+
+    assert all(r.passed for r in results)
+    assert CALLS == [
+        "psu.setup:COM1",
+        "psu.self_test",
+        "psu.start",
+        "nofixture.test",
+        "psu.stop",
+        "psu.start",
+        "test.setup",
+        "test.test",
+        "test.teardown",
+        "psu.stop",
+        "psu.lazy_stop",
+        "psu.disconnect",
+        "psu.teardown",
+    ]
+
+
+def test_broken_autoloaded_fixture_skips_every_test():
+    config = make_config(autoloaded_psu(healthy=False), TestCaseEntry(name="a", cls=cls_path(NoFixtureTest)))
+
+    results = run_tests(config)
+
+    assert results[0].verdict.status is VerdictStatus.SKIPPED
+    assert "self test" in results[0].verdict.message
+    assert CALLS.count("psu.self_test") == 1
+    assert "nofixture.test" not in CALLS
+
+
 # --- reporting ---------------------------------------------------------------
 
 
@@ -412,3 +468,82 @@ def test_param_no_method_takes_is_skipped():
 
     assert result.verdict.status is VerdictStatus.SKIPPED
     assert "typo" in result.verdict.message
+
+
+# --- fixture references: by parameter name and through fixturemap ------------
+
+
+class UsesPsuByName(BaseTestCase):
+    def test(self, psu: Psu):
+        CALLS.append(f"test.test:{psu.port}")
+        return True
+
+
+class OptionalPsu(BaseTestCase):
+    def test(self, psu: Psu | None = None):
+        CALLS.append(f"test.test:{psu}")
+        return True
+
+
+def test_fixture_param_without_config_resolves_by_its_name():
+    entry = TestCaseEntry(name="n", cls=cls_path(UsesPsuByName))
+    result = run_test(entry, FixtureManager(make_config(psu_entry(port="COM4"), entry)))
+
+    assert result.verdict.status is VerdictStatus.PASSED
+    assert "test.test:COM4" in CALLS
+    assert CALLS[-1] == "psu.stop"
+
+
+def test_fixture_param_without_matching_fixture_is_skipped():
+    entry = TestCaseEntry(name="n", cls=cls_path(UsesPsuByName))
+    result = run_test(entry, FixtureManager(make_config(entry)))
+
+    assert result.verdict.status is VerdictStatus.SKIPPED
+    assert "'psu'" in result.verdict.message
+
+
+def test_fixture_param_with_default_keeps_its_default():
+    entry = TestCaseEntry(name="n", cls=cls_path(OptionalPsu))
+    result = run_test(entry, FixtureManager(make_config(psu_entry(), entry)))
+
+    assert result.verdict.status is VerdictStatus.PASSED
+    assert CALLS == ["test.test:None"]
+
+
+def test_fixturemap_maps_param_to_differently_named_fixture():
+    bench = FixtureEntry(name="psu_bench_2", cls=cls_path(Psu), params={"port": "COM7"})
+    entry = TestCaseEntry(
+        name="m",
+        cls=cls_path(MethodParams),
+        params={"limit": 4.5},
+        fixturemap={"power_supply": "psu_bench_2"},
+    )
+    result = run_test(entry, FixtureManager(make_config(psu_entry(), bench, entry)))
+
+    assert result.verdict.status is VerdictStatus.PASSED
+    assert "test.test:COM7" in CALLS
+    assert "psu.setup:COM1" not in CALLS
+
+
+def test_fixturemap_overrides_a_default():
+    entry = TestCaseEntry(name="n", cls=cls_path(OptionalPsu), fixturemap={"psu": "psu"})
+    result = run_test(entry, FixtureManager(make_config(psu_entry(), entry)))
+
+    assert result.verdict.status is VerdictStatus.PASSED
+    assert "test.test:None" not in CALLS
+
+
+@pytest.mark.parametrize(
+    ("params", "fixturemap", "message"),
+    [
+        ({"power_supply": "psu"}, {"limit": "psu"}, "not a fixture parameter"),
+        ({"power_supply": "psu", "limit": 4.5}, {"typo": "psu"}, "typo"),
+        ({"limit": 4.5}, {"power_supply": "nope"}, "nope"),
+    ],
+)
+def test_invalid_fixturemap_is_skipped(params, fixturemap, message):
+    entry = TestCaseEntry(name="m", cls=cls_path(MethodParams), params=params, fixturemap=fixturemap)
+    result = run_test(entry, FixtureManager(make_config(psu_entry(), entry)))
+
+    assert result.verdict.status is VerdictStatus.SKIPPED
+    assert message in result.verdict.message

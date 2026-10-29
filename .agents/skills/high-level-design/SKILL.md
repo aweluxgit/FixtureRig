@@ -88,6 +88,10 @@ The design anticipates scalar values such as strings, integers, floats, booleans
 
 All external configuration values may need normalization before construction. Use type hints and explicit path rules rather than ad hoc string parsing. Paths should support a portable base or `relative-to` rule so configurations can be moved between machines.
 
+A `parametermap` always has the parameter names as keys. The value can be any literal, a list, or a dict.
+
+A test can have a `fixturemap` entry that maps the fixture names used in the test to the fixture names used in the configuration, in the form `<test fixture name>: <config fixture name>`. It is needed whenever the two names differ.
+
 Do not assume every non-literal value is an object reference until the reference syntax is defined. Reference resolution, complex generic types, subclass-specific parameters, and the behavior for unknown argument names remain design decisions. Implement these rules conservatively and document them in the configuration model.
 
 ## Execution Model
@@ -194,6 +198,49 @@ Contains the following methods for the testcase class:
 	The verdict of the test case is determined by the return value of this method. The return value can be a boolean or a verdict object.
 	If the test method throws an exception, the test case is considered an error unless the returned exception is inheriting from a verdict_exception. In that case the verdict is determined by the exception.
 - `teardown`: called after the test case is run. Used to teardown the test case.
+
+Errors in `setup` and `teardown` affect the test verdict just like errors in `test`.
+
+### Generator module
+
+Generators add tests with specific parameters based on additional inputs. Effectively they extend the list of tests in the config model with additional entries.
+
+- Generators are nodes in the config model and can create either additional test groups or tests.
+- A generator node has a list of entries that have been generated.
+- Generators have a single method, `generate(...)`:
+	- `generate()` takes parameters from the configuration in the same way as `test` does for test cases (including `__init__` inheritance and type-hint based conversion).
+	- `generate()` returns a list of entries to be inserted into the config model at the generator node.
+- Generators must have a `name`, so generators from different config files can be merged.
+- The generator's `name` is automatically used as the name of a test group that is attached to the generator node. The entries returned by `generate()` become the entries of that group.
+- The generator node has a `create_group` flag, `True` by default. If the config sets it to `false`, no group is created below the generator and the entries returned by `generate()` are added directly to the list of the generator node.
+- Generators don't have `setup()` or `teardown()` methods for now.
+- Generators run before the tests and before any fixture is created, so a generator can't take fixture parameters yet.
+- A generated entry must be a `TestCase`, a `TestGroup` or another `Generator`; nested generators are expanded as well.
+- Inside `generate()` the config model module (`fixturerig.config.model`) is used directly to create entries.
+
+Example:
+
+```python
+from fixturerig.base import Generator
+from fixturerig.config.model import TestCase
+
+class VoltageSweepGenerator(Generator):
+	def generate(self, voltages: list[float]):
+		return [
+			TestCase(name=f"voltage_{v}", cls="project.tests.VoltageLimitTest", params={"limit": v})
+			for v in voltages
+		]
+```
+
+```yaml
+- generator:
+	name: voltage_sweep
+	class: project.generators.VoltageSweepGenerator
+	parametermap:
+	  voltages: [3.3, 4.5, 5.0]
+```
+
+This produces one group `voltage_sweep` containing `voltage_3.3`, `voltage_4.5` and `voltage_5.0`. With `create_group: false` the three test cases are inserted directly at the generator node.
 
 ### Fixture module
 

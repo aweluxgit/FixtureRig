@@ -4,7 +4,7 @@
 
 FixtureRig is an object-oriented test framework for hardware-in-the-loop (HIL) and other physical-system testing. You write tests and device fixtures as ordinary Python classes. The concrete rig (ports, addresses, limits, calibration values) goes in YAML files outside the code. The same test then runs on any bench by switching the config.
 
-> **Status: early development (v0.1.0).** The core loop works: config parsing, inheritance-aware object construction, ordered execution, fixture lifecycle and multi-format reporting. Real device drivers (CAN, power supplies, ...), test generators and CLI parameter overrides are not implemented yet. Expect the config schema to change.
+> **Status: early development (v0.1.0).** The core loop works: config parsing, inheritance-aware object construction, ordered execution, fixture lifecycle and multi-format reporting. Real device drivers (CAN, power supplies, ...) and CLI parameter overrides are not implemented yet. Expect the config schema to change.
 
 ## Why FixtureRig?
 
@@ -188,16 +188,19 @@ Each config file is a YAML list. Each item is a single-key mapping:
 
 | Entry        | Keys                                                                   |
 |--------------|------------------------------------------------------------------------|
-| `fixture`    | `name`, `class` (required); `parametermap`, `parameterpath`            |
-| `testcase`   | `name`, `class` (required); `parametermap`, `parameterpath`, `traceability` |
+| `fixture`    | `name`, `class` (required); `parametermap`, `parameterpath`, `autoloaded` |
+| `testcase`   | `name`, `class` (required); `parametermap`, `parameterpath`, `fixturemap`, `traceability` |
 | `testgroup`  | A list of entries, or `{name, entries}` for a named group              |
 | `report`     | `class` (required); `name`, `parametermap`, `parameterpath`            |
+| `generator`  | `name`, `class` (required); `parametermap`, `parameterpath`, `create_group` |
 | `pythonpath` | A path added to the import roots                                       |
 
 - `class` is a Python import path (`package.module.Class`), resolved against the configured `pythonpath` roots.
 - `parametermap` values are taken literally (scalars, lists, mappings).
 - `parameterpath` values are paths, relative to the config file by default. A mapping with `path` and `base_path` or `base_module` sets a different base.
 - Parameter names are matched to the class's constructor arguments, including inherited ones.
+- A required parameter with a `Fixture` type hint that the config doesn't mention gets the fixture with the same name. `fixturemap` maps a test parameter to a fixture with a different name, e.g. `fixturemap: {power_supply: psu_bench_2}`. Only fixture-typed parameters may appear in a `fixturemap`.
+- A fixture with `autoloaded: true` is created at the very start of the run, before anything else runs, and is started and stopped around every test as if each test required it.
 
 ## Using FixtureRig as a library
 
@@ -245,7 +248,7 @@ tests/        pytest suite
 Planned, roughly in priority order:
 
 - Device fixtures for power supplies, CAN, Ethernet and XIL, with replaceable drivers
-- Test generators that create test cases from configuration or DUT information
+- Test generators that use DUT information
 - `--param` overrides with a defined precedence model
 - Environment and device setup phases (time sync, flashing, DUT info gathering)
 - A local web UI for device configuration, interactive tests and monitoring
@@ -262,16 +265,22 @@ A `FixtureRig: demo test_02` launch configuration in `.vscode/launch.json` runs 
 
 ### Building a wheel
 
+What works here depends on how python is installed on your system, and in particular if it is in your path.
+On some systems the python interpreter might be accessible under the name `py` instead of `python`.
+
 ```bash
-pip install build
+python -m pip install build
 python -m build                      # writes dist/fixturerig-<version>-py3-none-any.whl and the sdist
 ```
+
+Run these from the repository root (the folder containing `pyproject.toml`). If `pip` is not on `PATH`, call it through Python instead: `python -m pip install build`, or on Windows `py -m pip install build`.
 
 Install the wheel into any virtual environment. Activating that environment puts the `fixturerig` command on `PATH`. On Windows, pip creates `.venv\Scripts\fixturerig.exe` for it:
 
 ```bash
-pip install dist/fixturerig-0.1.0-py3-none-any.whl          # core only
-pip install "dist/fixturerig-0.1.0-py3-none-any.whl[all]"   # with Excel and PDF reports
+python -m venv venv
+pip install dist/fixturerig-0.1.0-py3-none-any.whl
+pip install "dist/fixturerig-0.1.0-py3-none-any.whl[dev]"   # with core development tools
 fixturerig --version
 python -m fixturerig --version      # equivalent, without the launcher
 ```

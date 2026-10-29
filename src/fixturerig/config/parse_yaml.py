@@ -39,11 +39,12 @@
 # - The document root must be a YAML list (or empty/null, treated as no
 #   entries).
 # - Each list item is a single-key mapping: "fixture", "testcase", "report",
-#   "pythonpath", or "testgroup". Any other shape, key count, or kind is a ConfigError -
+#   "pythonpath", "testgroup", or "generator". Any other shape, key count, or kind is a ConfigError -
 #   misspelled keys are rejected, never silently ignored or dropped.
 # - fixture/testcase bodies accept exactly `name` (required), `class`
 #   (required), `parametermap` (optional mapping of literal values) and
-#   `parameterpath` (optional mapping of path parameters).
+#   `parameterpath` (optional mapping of path parameters). fixture bodies
+#   additionally accept `autoloaded` (optional boolean, default false).
 #   `parameterlist` and typed params from the schema sketch above are not
 #   implemented yet; using them raises a clear ConfigError rather than being
 #   silently accepted or misparsed.
@@ -59,12 +60,27 @@
 #     - pythonpath: {path: lib, base_module: some.package}
 # - testcase bodies additionally accept `traceability`: a string or a list of
 #   strings referencing a test management tool.
+# - testcase bodies also accept `fixturemap`: a mapping of test parameter
+#   names to configured fixture names, e.g.
+#     fixturemap:
+#       power_supply: psu_bench_2
+#   Keys and values must be strings, and a key may not also appear in
+#   parametermap or parameterpath.
 # - report bodies accept `class` (required), `name`, `parametermap` and
 #   `parameterpath` (all optional), e.g.
 #     - report:
 #         class: fixturerig.report.json_report.JsonReport
 #         parameterpath:
 #           path: ../reports/results.json
+# - generator bodies accept `name` and `class` (required), `parametermap`,
+#   `parameterpath` and `create_group` (optional boolean, default true), e.g.
+#     - generator:
+#         name: voltage_sweep
+#         class: project.generators.VoltageSweep
+#         parametermap:
+#           voltages: [3.3, 4.5, 5.0]
+#   The generated entries are not part of the config file; they are added
+#   when the generator runs (see core/generator.py).
 # - testgroup bodies accept either a bare list of nested entries (an
 #   anonymous group, matching the sketch above) or a mapping of
 #   {name, entries} for a named group. Nested entries follow the same
@@ -85,6 +101,7 @@ from fixturerig.config.model import (
     ConfigError,
     ConfigPath,
     Fixture,
+    Generator,
     PythonPath,
     Report,
     TestCase,
@@ -95,13 +112,16 @@ _FIXTURE_REQUIRED_KEYS = {"name", "class"}
 _PARAM_KEYS = {"parametermap", "parameterpath"}
 _PARAMPATH_KEYS = {"path", "base_module", "base_path"}
 
-_FIXTURE_ALLOWED_KEYS = _FIXTURE_REQUIRED_KEYS | _PARAM_KEYS
+_FIXTURE_ALLOWED_KEYS = _FIXTURE_REQUIRED_KEYS | _PARAM_KEYS | {"autoloaded"}
 
 _TESTCASE_REQUIRED_KEYS = {"name", "class"}
-_TESTCASE_ALLOWED_KEYS = _TESTCASE_REQUIRED_KEYS | _PARAM_KEYS | {"traceability"}
+_TESTCASE_ALLOWED_KEYS = _TESTCASE_REQUIRED_KEYS | _PARAM_KEYS | {"traceability", "fixturemap"}
 
 _REPORT_REQUIRED_KEYS = {"class"}
 _REPORT_ALLOWED_KEYS = _REPORT_REQUIRED_KEYS | _PARAM_KEYS | {"name"}
+
+_GENERATOR_REQUIRED_KEYS = {"name", "class"}
+_GENERATOR_ALLOWED_KEYS = _GENERATOR_REQUIRED_KEYS | _PARAM_KEYS | {"create_group"}
 
 _TESTGROUP_REQUIRED_KEYS: set[str] = set()
 _TESTGROUP_ALLOWED_KEYS = _TESTGROUP_REQUIRED_KEYS | {"name", "entries"}
@@ -146,7 +166,7 @@ def _parse_entry(item: Any, source: Path) -> ConfigEntry:
     if not isinstance(item, dict) or len(item) != 1:
         raise ConfigError(
             f"{source}: each config entry must be a single-key mapping "
-            f"('fixture', 'testcase', 'report', 'pythonpath', or 'testgroup'), got {item!r}"
+            f"('fixture', 'testcase', 'report', 'pythonpath', 'testgroup', or 'generator'), got {item!r}"
         )
 
     ((kind, body),) = item.items()
@@ -161,10 +181,12 @@ def _parse_entry(item: Any, source: Path) -> ConfigEntry:
         return PythonPath(path=_parse_path_value(body, source, "pythonpath"), source=source)
     if kind == "testgroup":
         return _parse_testgroup(body, source)
+    if kind == "generator":
+        return _parse_generator(body, source)
 
     raise ConfigError(
         f"{source}: unknown config entry kind {kind!r}, expected "
-        f"'fixture', 'testcase', 'report', 'pythonpath', or 'testgroup'"
+        f"'fixture', 'testcase', 'report', 'pythonpath', 'testgroup', or 'generator'"
     )
 
 
@@ -236,24 +258,45 @@ def _parse_path_value(value: Any, source: Path, what: str) -> ConfigPath:
 def _parse_fixture(body: Any, source: Path) -> Fixture:
     body = _require_mapping(body, source, "fixture")
     _check_keys(body, _FIXTURE_ALLOWED_KEYS, _FIXTURE_REQUIRED_KEYS, source, "fixture")
+    autoloaded = body.get("autoloaded", False)
+    if not isinstance(autoloaded, bool):
+        raise ConfigError(f"{source}: fixture autoloaded must be true or false, got {autoloaded!r}")
     return Fixture(
         name=body["name"],
         cls=body["class"],
         params=_parse_params(body, source, "fixture"),
         source=source,
+        autoloaded=autoloaded,
     )
 
 
 def _parse_testcase(body: Any, source: Path) -> TestCase:
     body = _require_mapping(body, source, "testcase")
     _check_keys(body, _TESTCASE_ALLOWED_KEYS, _TESTCASE_REQUIRED_KEYS, source, "testcase")
+    params = _parse_params(body, source, "testcase")
     return TestCase(
         name=body["name"],
         cls=body["class"],
-        params=_parse_params(body, source, "testcase"),
+        params=params,
         source=source,
         traceability=_parse_traceability(body, source),
+        fixturemap=_parse_fixturemap(body, params, source),
     )
+
+
+def _parse_fixturemap(body: dict, params: dict, source: Path) -> dict[str, str]:
+    fixturemap = _section(body, "fixturemap", source, "testcase")
+    bad = {k: v for k, v in fixturemap.items() if not isinstance(k, str) or not isinstance(v, str)}
+    if bad:
+        raise ConfigError(
+            f"{source}: testcase fixturemap must map parameter names to fixture names, got {bad!r}"
+        )
+    both = sorted(set(fixturemap) & set(params))
+    if both:
+        raise ConfigError(
+            f"{source}: testcase parameter(s) {both} given in both fixturemap and parametermap/parameterpath"
+        )
+    return dict(fixturemap)
 
 
 def _parse_traceability(body: dict, source: Path) -> list[str]:
@@ -275,6 +318,21 @@ def _parse_report(body: Any, source: Path) -> Report:
         params=_parse_params(body, source, "report"),
         name=body.get("name"),
         source=source,
+    )
+
+
+def _parse_generator(body: Any, source: Path) -> Generator:
+    body = _require_mapping(body, source, "generator")
+    _check_keys(body, _GENERATOR_ALLOWED_KEYS, _GENERATOR_REQUIRED_KEYS, source, "generator")
+    create_group = body.get("create_group", True)
+    if not isinstance(create_group, bool):
+        raise ConfigError(f"{source}: generator create_group must be true or false, got {create_group!r}")
+    return Generator(
+        name=body["name"],
+        cls=body["class"],
+        params=_parse_params(body, source, "generator"),
+        source=source,
+        create_group=create_group,
     )
 
 

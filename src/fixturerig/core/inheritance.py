@@ -62,6 +62,17 @@
 #   a hard error, not a silent drop - see high-level-design's "Do not
 #   silently consume misspelled parameters."
 #
+# - A config node may also carry a `fixturemap` ({parameter name: fixture
+#   name}, testcases only). Its entries are matched like params, but a
+#   mapped parameter must have a Fixture type hint - anything else is an
+#   ArgumentMappingError, so a fixture name is never passed as a plain string.
+#
+# - A required parameter with a Fixture type hint that the config does not
+#   name at all is resolved by its own parameter name: `psu: Psu` gets the
+#   fixture configured as "psu". This only happens when an
+#   instantiate_fixture callback is given. A parameter with a default keeps
+#   its default; name it in the fixturemap to get a fixture instead.
+#
 # - map_config_to_methods maps one config node onto several callables at
 #   once (for a testcase: __init__, setup, test and teardown). Every
 #   callable gets each config key it names, so the same key may feed more
@@ -120,8 +131,8 @@ def map_config_to_method_args(
         config key that matches nothing in `func` (or its class's
         inheritance hierarchy).
     """
-    params = getattr(config, "params", config)
-    mapped_args, remaining = _map_onto(params, func, instantiate_fixture)
+    params, fixture_keys = _config_params(config)
+    mapped_args, remaining = _map_onto(params, fixture_keys, func, instantiate_fixture)
     if remaining:
         raise ArgumentMappingError(f"Unknown parameter(s) {sorted(remaining)} for {_describe(func)}")
     return mapped_args
@@ -143,11 +154,11 @@ def map_config_to_methods(
     :raises ArgumentMappingError: as map_config_to_method_args; an unknown
         key is reported once, against all of `funcs`.
     """
-    params = getattr(config, "params", config)
+    params, fixture_keys = _config_params(config)
     results: list[dict[str, Any]] = []
     unmatched = set(params)
     for func in funcs:
-        mapped_args, remaining = _map_onto(params, func, instantiate_fixture)
+        mapped_args, remaining = _map_onto(params, fixture_keys, func, instantiate_fixture)
         results.append(mapped_args)
         unmatched &= set(remaining)
     if unmatched:
@@ -156,8 +167,16 @@ def map_config_to_methods(
     return results
 
 
+def _config_params(config: Any) -> tuple[dict[str, Any], set[str]]:
+    """Return a config node's params merged with its fixturemap, and the fixturemap's keys."""
+    params = getattr(config, "params", config)
+    fixturemap = getattr(config, "fixturemap", {})
+    return {**params, **fixturemap}, set(fixturemap)
+
+
 def _map_onto(
     params: Any,
+    fixture_keys: set[str],
     func: Any,
     instantiate_fixture: InstantiateFixture | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -178,12 +197,17 @@ def _map_onto(
             has_var_keyword = True
             continue
 
+        hint = hints.get(param.name, param.annotation)
         if param.name in params:
-            hint = hints.get(param.name, param.annotation)
-            mapped_args[param.name] = _convert_value(params[param.name], hint, instantiate_fixture)
+            mapped_args[param.name] = _convert_param(
+                param.name, params[param.name], hint, fixture_keys, func, instantiate_fixture
+            )
             consumed.add(param.name)
         elif param.default is not inspect.Parameter.empty:
             continue
+        elif instantiate_fixture is not None and _is_fixture_hint(hint):
+            # Not configured: the fixture is looked up by the parameter's own name.
+            mapped_args[param.name] = _convert_value(param.name, hint, instantiate_fixture)
         else:
             raise ArgumentMappingError(f"Missing required parameter: {param.name!r} for {_describe(func)}")
 
@@ -193,7 +217,7 @@ def _map_onto(
         owner = _owning_class(func)
         if owner is not None:
             mapped_args.update(
-                _map_via_mro(remaining, owner, _target_name(func), consumed, instantiate_fixture)
+                _map_via_mro(remaining, fixture_keys, owner, _target_name(func), consumed, instantiate_fixture)
             )
             remaining = {name: value for name, value in remaining.items() if name not in consumed}
 
@@ -202,6 +226,7 @@ def _map_onto(
 
 def _map_via_mro(
     remaining: dict[str, Any],
+    fixture_keys: set[str],
     owner: type,
     method_name: str,
     consumed: set[str],
@@ -236,7 +261,9 @@ def _map_via_mro(
                 continue
             if param.name in remaining:
                 hint = member_hints.get(param.name, param.annotation)
-                mapped[param.name] = _convert_value(remaining[param.name], hint, instantiate_fixture)
+                mapped[param.name] = _convert_param(
+                    param.name, remaining[param.name], hint, fixture_keys, member, instantiate_fixture
+                )
                 consumed.add(param.name)
 
         remaining = {name: value for name, value in remaining.items() if name not in consumed}
@@ -301,6 +328,29 @@ def _convert_bool(value: Any) -> bool:
             return False
         raise ArgumentMappingError(f"Cannot convert {value!r} to bool")
     return bool(value)
+
+
+def _is_fixture_hint(hint: Any) -> bool:
+    """Whether `hint` is a Fixture subclass, or a Union/Optional containing one."""
+    if typing.get_origin(hint) in _UNION_ORIGINS:
+        return any(_is_fixture_hint(arg) for arg in typing.get_args(hint))
+    return inspect.isclass(hint) and issubclass(hint, Fixture)
+
+
+def _convert_param(
+    name: str,
+    value: Any,
+    hint: Any,
+    fixture_keys: set[str],
+    func: Any,
+    instantiate_fixture: InstantiateFixture | None,
+) -> Any:
+    if name in fixture_keys and not _is_fixture_hint(hint):
+        raise ArgumentMappingError(
+            f"fixturemap entry {name!r} is not a fixture parameter of {_describe(func)}; "
+            "its type hint must be a Fixture subclass"
+        )
+    return _convert_value(value, hint, instantiate_fixture)
 
 
 def _convert_value(value: Any, hint: Any, instantiate_fixture: InstantiateFixture | None) -> Any:
