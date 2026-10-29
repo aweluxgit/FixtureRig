@@ -1,0 +1,10 @@
+---
+- testcase:
+    name: "1: runs before the exception"
+    class: tests.interactive.Passes
+- testcase:
+    name: "2: raises an exception"
+    class: tests.interactive.Raises
+- testcase:
+    name: "3: never runs in interactive mode"
+    class: tests.interactive.NeverRuns

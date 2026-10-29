@@ -5,7 +5,7 @@ from fixturerig.base import VerdictStatus
 from fixturerig.config.model import Config
 from fixturerig.config.model import Fixture as FixtureEntry
 from fixturerig.config.model import TestCase as TestCaseEntry
-from fixturerig.core.runner import run_tests
+from fixturerig.core.runner import run_all
 from fixturerig.fixtures.dummy_fixture import DummyFixture
 
 INSTANCES: list[DummyFixture] = []
@@ -61,13 +61,13 @@ def test_access_requires_a_connection():
 
 
 def test_runner_drives_the_full_lifecycle():
-    (result,) = run_tests(_config(values={"voltage": 0.0}))
+    (result,) = run_all(_config(values={"voltage": 0.0}))
 
     assert result.passed
     assert INSTANCES[0].calls == ["setup", "self_test", "start", "stop", "lazy_stop", "disconnect", "teardown"]
 
 
 def test_failing_self_test_skips_dependent_tests():
-    (result,) = run_tests(_config(self_test_ok=False))
+    (result,) = run_all(_config(self_test_ok=False))
     assert result.verdict.status is VerdictStatus.SKIPPED
     assert "self test" in result.verdict.message

@@ -123,6 +123,8 @@ fixturerig --config config/env.yaml --config config/test.yaml
 
 The exit code is `0` when the run completes, `1` for a configuration error and `2` for an invalid argument.
 
+Add `--interactive` to debug tests: any exception raised in a test, fixture, step or generator falls through to the top of the program and ends it, instead of being reported as an `ERROR` verdict. Start the run in an IDE that breaks on uncaught exceptions to inspect the root cause. The `dut_shutdown` steps, fixture teardown and reports still run on the way out.
+
 ## Core concepts
 
 ### Fixtures
@@ -194,6 +196,7 @@ Each config file is a YAML list. Each item is a single-key mapping:
 | `report`     | `class` (required); `name`, `parametermap`, `parameterpath`            |
 | `generator`  | `name`, `class` (required); `parametermap`, `parameterpath`, `create_group` |
 | `pythonpath` | A path added to the import roots                                       |
+| `env_setup`, `dut_info`, `dut_shutdown` | `name`, `class` (required); `parametermap`, `parameterpath` |
 
 - `class` is a Python import path (`package.module.Class`), resolved against the configured `pythonpath` roots.
 - `parametermap` values are taken literally (scalars, lists, mappings).
@@ -201,6 +204,7 @@ Each config file is a YAML list. Each item is a single-key mapping:
 - Parameter names are matched to the class's constructor arguments, including inherited ones.
 - A required parameter with a `Fixture` type hint that the config doesn't mention gets the fixture with the same name. `fixturemap` maps a test parameter to a fixture with a different name, e.g. `fixturemap: {power_supply: psu_bench_2}`. Only fixture-typed parameters may appear in a `fixturemap`.
 - A fixture with `autoloaded: true` is created at the very start of the run, before anything else runs, and is started and stopped around every test as if each test required it.
+- `env_setup`, `dut_info` and `dut_shutdown` entries are lifecycle steps: subclasses of `fixturerig.base.Step` that implement `run()`. They must be top-level entries. They run by stage, in this order: autoloaded fixtures, generators, `env_setup`, `dut_info`, tests, `dut_shutdown`. If `run()` returns a mapping (e.g. the DUT's serial number), it is reported as a table. If a setup or info step fails, the steps after it are not run and every test is reported as skipped. `dut_shutdown` steps always run.
 
 ## Using FixtureRig as a library
 
@@ -212,7 +216,7 @@ from pathlib import Path
 from fixturerig.config.model import Config
 from fixturerig.config.parse_yaml import read_config_files
 from fixturerig.core.class_loader import add_python_paths
-from fixturerig.core.runner import run_tests
+from fixturerig.core.runner import run_all
 from fixturerig.report.loader import build_report_stream
 
 config = Config(entries=[])
@@ -221,13 +225,15 @@ add_python_paths(config)
 
 stream = build_report_stream(config)
 try:
-    results = run_tests(config, stream)
+    results = run_all(config, stream)
 finally:
     stream.close()
 
 for r in results:
     print(r.name, r.verdict, f"{r.duration:.3f}s")
 ```
+
+`run_all` runs every phase in order. To add your own steps between the phases, call them one by one inside a `RunSession`, as `fixturerig.main` does: `run_generators`, `run_env_setup`, `run_dut_info`, `run_tests`, and `run_dut_shutdown` in a `finally`.
 
 ## Project layout
 
@@ -248,9 +254,7 @@ tests/        pytest suite
 Planned, roughly in priority order:
 
 - Device fixtures for power supplies, CAN, Ethernet and XIL, with replaceable drivers
-- Test generators that use DUT information
 - `--param` overrides with a defined precedence model
-- Environment and device setup phases (time sync, flashing, DUT info gathering)
 - A local web UI for device configuration, interactive tests and monitoring
 
 ## Development

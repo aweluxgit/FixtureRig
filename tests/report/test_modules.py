@@ -11,7 +11,7 @@ from fixturerig.config.model import Config
 from fixturerig.config.model import Fixture as FixtureEntry
 from fixturerig.config.model import TestCase as TestCaseEntry
 from fixturerig.config.model import TestGroup
-from fixturerig.core.runner import run_tests
+from fixturerig.core.runner import run_all
 from fixturerig.report import ColoredConsoleReport, ConsoleReport, Image, ReportStream, Table, report
 from fixturerig.report.allure import AllureReport
 from fixturerig.report.html import HtmlReport
@@ -88,7 +88,7 @@ def make_config() -> Config:
 
 def run_with(*modules) -> None:
     stream = ReportStream(modules)
-    run_tests(make_config(), stream)
+    run_all(make_config(), stream)
     stream.close()
 
 

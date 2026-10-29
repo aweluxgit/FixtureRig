@@ -4,8 +4,10 @@
 # init config module
 # Parses arguments
 # Parses config files
+# runs the env setup and DUT info steps
 # launches test generators
 # launches tests
+# runs the DUT shutdown steps
 # creates test reports
 #
 # The entire fixturerig module is written in a way that it can be used as a component in another test system.
@@ -26,8 +28,14 @@ from fixturerig.config.model import Config, ConfigError
 from fixturerig.config.parse_args import Args, ArgsError, read_config_from_args, read_app_args
 from fixturerig.config.parse_yaml import read_config_files
 from fixturerig.core.class_loader import add_python_paths
-from fixturerig.core.generator import run_generators
-from fixturerig.core.runner import run_tests
+from fixturerig.core.runner import (
+    RunSession,
+    run_dut_info,
+    run_dut_shutdown,
+    run_env_setup,
+    run_generators,
+    run_tests,
+)
 from fixturerig.report.loader import build_report_stream
 from fixturerig.report.stream import ReportStream
 
@@ -63,10 +71,6 @@ def finalize_reports(report_stream: ReportStream) -> None:
     report_stream.close()
 
 
-def phase_run_test(config, report_stream: ReportStream | None = None):
-    run_tests(config, report_stream)
-
-
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     try:
@@ -78,8 +82,14 @@ def main(argv: list[str] | None = None) -> int:
         add_python_paths(config)
         report_stream = prepare_reports(config)
         try:
-            run_generators(config)
-            run_tests(config, report_stream)
+            with RunSession(config, report_stream, interactive=args.interactive) as session:
+                try:
+                    run_generators(session)
+                    run_env_setup(session)
+                    run_dut_info(session)
+                    run_tests(session)
+                finally:
+                    run_dut_shutdown(session)
         finally:
             finalize_reports(report_stream)
 

@@ -5,8 +5,8 @@ from fixturerig.base import Generator as BaseGenerator
 from fixturerig.base import TestCase as BaseTestCase  # aliased so pytest does not collect it
 from fixturerig.config.model import Config, ConfigError, Generator, TestGroup
 from fixturerig.config.model import TestCase as TestCaseEntry
-from fixturerig.core.generator import GeneratorError, run_generators
-from fixturerig.core.runner import run_tests
+from fixturerig.core.generator import GeneratorError, expand_generators
+from fixturerig.core.runner import run_all
 
 
 def cls_path(cls: type) -> str:
@@ -91,7 +91,7 @@ def test_generator_without_group_adds_entries_directly():
     )
     config = Config(entries=[gen])
 
-    run_generators(config)
+    expand_generators(config)
 
     assert gen.generated
     assert [e.name for e in gen.entries] == ["value_0.5", "value_2.0"]
@@ -102,7 +102,7 @@ def test_generator_without_group_adds_entries_directly():
 def test_generator_wraps_entries_in_a_group_by_default():
     gen = Generator(cls=cls_path(Sweep), name="sweep", params={"values": [3]})
 
-    run_generators(Config(entries=[gen]))
+    expand_generators(Config(entries=[gen]))
 
     (group,) = gen.entries
     assert isinstance(group, TestGroup)
@@ -116,7 +116,7 @@ def test_generated_groups_and_nested_generators_are_expanded(tmp_path):
     nested = Generator(name="nested", cls=cls_path(Nested), source=source)
     config = Config(entries=[TestGroup(entries=[grouped]), nested])
 
-    run_generators(config)
+    expand_generators(config)
 
     assert grouped.entries[0].entries[0].source == source
     inner = nested.entries[0].entries[0]
@@ -128,8 +128,8 @@ def test_generators_run_only_once():
     COUNT["calls"] = 0
     config = Config(entries=[Generator(name="counting", cls=cls_path(Counting))])
 
-    run_generators(config)
-    run_generators(config)
+    expand_generators(config)
+    expand_generators(config)
 
     assert COUNT["calls"] == 1
 
@@ -149,7 +149,7 @@ def test_generators_run_only_once():
 )
 def test_generator_problems_are_config_errors(entry, message):
     with pytest.raises(GeneratorError, match=message) as info:
-        run_generators(Config(entries=[entry]))
+        expand_generators(Config(entries=[entry]))
     assert isinstance(info.value, ConfigError)
 
 
@@ -162,7 +162,7 @@ def test_run_tests_runs_generated_tests_in_place():
         ]
     )
 
-    results = run_tests(config)
+    results = run_all(config)
 
     assert [(r.name, r.verdict.status.value) for r in results] == [
         ("first", "passed"),
@@ -170,3 +170,8 @@ def test_run_tests_runs_generated_tests_in_place():
         ("value_2.0", "passed"),
         ("last", "failed"),
     ]
+
+
+def test_interactive_generator_exception_is_raised_as_it_is():
+    with pytest.raises(RuntimeError, match="boom"):
+        expand_generators(Config(entries=[Generator(name="gen", cls=cls_path(Crashes))]), interactive=True)

@@ -39,8 +39,10 @@
 # - The document root must be a YAML list (or empty/null, treated as no
 #   entries).
 # - Each list item is a single-key mapping: "fixture", "testcase", "report",
-#   "pythonpath", "testgroup", or "generator". Any other shape, key count, or kind is a ConfigError -
-#   misspelled keys are rejected, never silently ignored or dropped.
+#   "pythonpath", "testgroup", "generator", or one of the lifecycle stages
+#   "env_setup", "dut_info" and "dut_shutdown". Any other shape,
+#   key count, or kind is a ConfigError - misspelled keys are rejected, never
+#   silently ignored or dropped.
 # - fixture/testcase bodies accept exactly `name` (required), `class`
 #   (required), `parametermap` (optional mapping of literal values) and
 #   `parameterpath` (optional mapping of path parameters). fixture bodies
@@ -81,6 +83,15 @@
 #           voltages: [3.3, 4.5, 5.0]
 #   The generated entries are not part of the config file; they are added
 #   when the generator runs (see core/generator.py).
+# - env_setup, dut_info and dut_shutdown bodies all accept `name`
+#   and `class` (required), `parametermap` and `parameterpath`, e.g.
+#     - env_setup:
+#         name: "Flash Firmware"
+#         class: project.setup.FlashFirmware
+#         parameterpath:
+#           path: resources/firmware.bin
+#   Each becomes a Step of that stage. Steps are only allowed at the top
+#   level of a file; one inside a testgroup is a ConfigError.
 # - testgroup bodies accept either a bare list of nested entries (an
 #   anonymous group, matching the sketch above) or a mapping of
 #   {name, entries} for a named group. Nested entries follow the same
@@ -102,8 +113,10 @@ from fixturerig.config.model import (
     ConfigPath,
     Fixture,
     Generator,
+    STAGES,
     PythonPath,
     Report,
+    Step,
     TestCase,
     TestGroup,
 )
@@ -123,8 +136,16 @@ _REPORT_ALLOWED_KEYS = _REPORT_REQUIRED_KEYS | _PARAM_KEYS | {"name"}
 _GENERATOR_REQUIRED_KEYS = {"name", "class"}
 _GENERATOR_ALLOWED_KEYS = _GENERATOR_REQUIRED_KEYS | _PARAM_KEYS | {"create_group"}
 
+_STEP_REQUIRED_KEYS = {"name", "class"}
+_STEP_ALLOWED_KEYS = _STEP_REQUIRED_KEYS | _PARAM_KEYS
+
 _TESTGROUP_REQUIRED_KEYS: set[str] = set()
 _TESTGROUP_ALLOWED_KEYS = _TESTGROUP_REQUIRED_KEYS | {"name", "entries"}
+
+
+_KINDS = ", ".join(
+    repr(kind) for kind in ("fixture", "testcase", "report", "pythonpath", "testgroup", "generator", *STAGES)
+)
 
 
 def parse_yaml_file(path: str | Path) -> Config:
@@ -166,7 +187,7 @@ def _parse_entry(item: Any, source: Path) -> ConfigEntry:
     if not isinstance(item, dict) or len(item) != 1:
         raise ConfigError(
             f"{source}: each config entry must be a single-key mapping "
-            f"('fixture', 'testcase', 'report', 'pythonpath', 'testgroup', or 'generator'), got {item!r}"
+            f"({_KINDS}), got {item!r}"
         )
 
     ((kind, body),) = item.items()
@@ -183,11 +204,10 @@ def _parse_entry(item: Any, source: Path) -> ConfigEntry:
         return _parse_testgroup(body, source)
     if kind == "generator":
         return _parse_generator(body, source)
+    if kind in STAGES:
+        return _parse_step(kind, body, source)
 
-    raise ConfigError(
-        f"{source}: unknown config entry kind {kind!r}, expected "
-        f"'fixture', 'testcase', 'report', 'pythonpath', 'testgroup', or 'generator'"
-    )
+    raise ConfigError(f"{source}: unknown config entry kind {kind!r}, expected {_KINDS}")
 
 
 def _require_mapping(body: Any, source: Path, kind: str) -> dict:
@@ -336,10 +356,23 @@ def _parse_generator(body: Any, source: Path) -> Generator:
     )
 
 
+def _parse_step(stage: str, body: Any, source: Path) -> Step:
+    body = _require_mapping(body, source, stage)
+    _check_keys(body, _STEP_ALLOWED_KEYS, _STEP_REQUIRED_KEYS, source, stage)
+    return Step(
+        stage=stage,
+        name=body["name"],
+        cls=body["class"],
+        params=_parse_params(body, source, stage),
+        source=source,
+    )
+
+
 def _parse_testgroup(body: Any, source: Path) -> TestGroup:
     if isinstance(body, list):
         # Anonymous group: `testgroup: [<entry>, ...]`.
         nested = [_parse_entry(item, source) for item in body]
+        _check_no_steps(nested, source)
         return TestGroup(entries=nested, name=None, source=source)
 
     body = _require_mapping(body, source, "testgroup")
@@ -350,4 +383,14 @@ def _parse_testgroup(body: Any, source: Path) -> TestGroup:
             f"{source}: testgroup entries must be a list, got {type(nested_body).__name__}"
         )
     nested = [_parse_entry(item, source) for item in nested_body]
+    _check_no_steps(nested, source)
     return TestGroup(entries=nested, name=body.get("name"), source=source)
+
+
+def _check_no_steps(entries: list[ConfigEntry], source: Path) -> None:
+    for entry in entries:
+        if isinstance(entry, Step):
+            raise ConfigError(
+                f"{source}: {entry.stage} {entry.name!r} is not allowed inside a testgroup; "
+                f"lifecycle steps apply to the whole run and must be top level entries"
+            )

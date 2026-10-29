@@ -42,3 +42,22 @@ def test_main_returns_one_on_config_error(tmp_path):
     bad_config = _write(tmp_path, "bad.yaml", "- widget:\n    name: x\n")
 
     assert main(["--config", str(bad_config)]) == 1
+
+
+def test_main_interactive_lets_a_test_exception_through(tmp_path):
+    (tmp_path / "crashing_tests.py").write_text(
+        "from fixturerig.base import TestCase\n\n"
+        "class Crashes(TestCase):\n"
+        "    def test(self):\n"
+        "        raise ZeroDivisionError('interactive')\n",
+        encoding="utf-8",
+    )
+    config_path = _write(
+        tmp_path,
+        "config.yaml",
+        "- pythonpath: .\n- testcase:\n    name: crash\n    class: crashing_tests.Crashes\n",
+    )
+
+    assert main(["--config", str(config_path)]) == 0
+    with pytest.raises(ZeroDivisionError, match="interactive"):
+        main(["--config", str(config_path), "--interactive"])

@@ -4,13 +4,14 @@
 # Design decisions (see .agents/skills/high-level-design/SKILL.md, "Generator
 # module"):
 #
-# - run_generators expands every Generator node of the config in place, in
+# - expand_generators expands every Generator node of the config in place, in
 #   configuration order (a depth first walk). A generator's config params are
 #   mapped onto its __init__ and generate() together, like a testcase's.
 #
-# - Generators run before any fixture exists, so a generator parameter can't
-#   be a fixture reference; such a parameter is a mapping error. Getting DUT
-#   information into a generator is left for when that lifecycle phase exists.
+# - Generators are the first phase of a run, before the env_setup and
+#   dut_info steps (see core/runner.py), so they can't use DUT information.
+#   A generator parameter can't be a fixture reference; such a parameter is
+#   a mapping error.
 #
 # - generate() must return a list of TestCase, TestGroup or Generator entries
 #   (groups checked recursively). By default they are wrapped in a single
@@ -24,9 +25,11 @@
 # - Any failure - class loading, argument mapping, an exception from
 #   generate() or an invalid result - is a GeneratorError. It is a ConfigError,
 #   since the configured run cannot be built without the generated entries.
+#   In interactive mode (see core/runner.py) an exception from the
+#   generator's __init__ or generate() is re-raised as it is instead.
 #
 # - Expansion happens once per generator (`Generator.generated`), so calling
-#   run_generators again - e.g. from run_tests after main already did - is a
+#   expand_generators again - e.g. from a second run of the same config - is a
 #   no-op for generators that have already run.
 #
 
@@ -51,22 +54,22 @@ class GeneratorError(ConfigError):
     """Raised when a configured generator cannot be run or returns invalid entries."""
 
 
-def run_generators(config: Config) -> None:
+def expand_generators(config: Config, interactive: bool = False) -> None:
     """Expand every not yet generated Generator node of `config` in place."""
-    _expand_entries(config.entries)
+    _expand_entries(config.entries, interactive)
 
 
-def _expand_entries(entries: list[ConfigEntry]) -> None:
+def _expand_entries(entries: list[ConfigEntry], interactive: bool) -> None:
     for entry in entries:
         if isinstance(entry, GeneratorEntry):
             if not entry.generated:
-                _generate(entry)
-            _expand_entries(entry.entries)
+                _generate(entry, interactive)
+            _expand_entries(entry.entries, interactive)
         elif isinstance(entry, TestGroup):
-            _expand_entries(entry.entries)
+            _expand_entries(entry.entries, interactive)
 
 
-def _generate(entry: GeneratorEntry) -> None:
+def _generate(entry: GeneratorEntry, interactive: bool) -> None:
     label = entry.name
     try:
         cls = load_class(entry.cls)
@@ -84,6 +87,8 @@ def _generate(entry: GeneratorEntry) -> None:
     try:
         generated = cls(**init_kwargs).generate(**generate_kwargs)
     except Exception as exc:
+        if interactive:
+            raise
         raise GeneratorError(f"Generator {label!r}: generate() raised {exc!r}") from exc
 
     if not isinstance(generated, list):

@@ -18,7 +18,6 @@ Available options in the config files:
 - pythonpath
 - parameters
 - env_setup
-- dut_setup
 - dut_info
 - dut_shutdown
 
@@ -31,10 +30,9 @@ Common subfields for fixture, testcase, generator, report, and plugin entries:
 - parameterpath
 
 The entries are run in order:
-- env_setup
-- dut_setup
-- dut_info
 - generator
+- env_setup
+- dut_info
 - testcase
 - dut_shutdown
 
@@ -118,8 +116,32 @@ class VoltageSweep(Generator):
                 for v in voltages]
 ```
 
-Generators run before the tests and before any fixture is created, so they can't take fixture parameters.
+Generators run first, before the env_setup and dut_info steps, so they can't use DUT information. They can't take fixture parameters.
 Any problem while generating (unknown class, bad parameters, an exception, an invalid return value) stops the run with a config error.
+
+## env_setup, dut_info, dut_shutdown
+
+These three entry kinds are lifecycle steps. They all have the same shape: `name` and `class` (required), `parametermap` and `parameterpath`.
+The class is a subclass of `fixturerig.base.Step` and implements `run()`. The parameters are passed to its `__init__` and `run()` methods, like a testcase's.
+A parameter with a Fixture type hint references a configured fixture, as for tests; the fixture is started before `run()` and stopped after it.
+
+```yaml
+- env_setup:
+    name: "Flash Firmware"
+    class: project.setup.FlashFirmware   # def run(self, dut: Dut, path: Path)
+    parameterpath:
+      path: resources/firmware.bin
+- dut_info:
+    name: "Collect DUT information"
+    class: project.info.Collect          # def run(self) -> dict
+```
+
+- Steps are only allowed at the top level of a config file, not inside a testgroup, and generators can't create them.
+- They run per stage in the order listed above, in config order within a stage, no matter where they are declared between other entries.
+- `run()` may return a mapping, which is reported as a two-column table in the step's report group (`<stage>: <name>`). Any other non-None return value fails the step.
+- If an env_setup or dut_info step fails (bad class, bad parameters, a fixture problem, an exception), the remaining setup steps don't run and every test is reported as skipped with the reason.
+- dut_shutdown steps always run, all of them, even after a failure or an aborted run. A failed shutdown step is reported but doesn't change any test verdict.
+- Steps are not tests and are not counted in the run summary.
 
 ## pythonpath
 

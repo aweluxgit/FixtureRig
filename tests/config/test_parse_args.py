@@ -48,3 +48,11 @@ def test_duplicate_param_key_raises_args_error():
 def test_empty_param_key_raises_args_error():
     with pytest.raises(ArgsError, match="must not be empty"):
         read_app_args(["--config", "a.yaml", "--param", "=value"])
+
+
+def test_interactive_defaults_to_off():
+    assert read_app_args(["--config", "a.yaml"]).interactive is False
+
+
+def test_interactive_flag_is_parsed():
+    assert read_app_args(["--config", "a.yaml", "--interactive"]).interactive is True

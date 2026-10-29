@@ -5,8 +5,8 @@
 # Constraints and Open Decisions", for the open items these narrow down):
 #
 # - A config document is a flat or nested list of entries. Every entry is
-#   exactly one of a Fixture, a TestCase, a Report, a PythonPath, a TestGroup
-#   or a Generator. Groups nest other
+#   exactly one of a Fixture, a TestCase, a Report, a PythonPath, a TestGroup,
+#   a Generator or a Step. Groups nest other
 #   entries but are not themselves tests - see high-level-design's
 #   "Test groups should support hierarchy... organizational and should not
 #   themselves count as tests".
@@ -88,6 +88,15 @@
 #   fixture name}, for a fixture parameter whose name differs from the
 #   fixture's configured name. It is kept apart from `params` so a mapped
 #   name can only ever resolve to a fixture, never be passed as a string.
+#
+# - A Step is one entry of a lifecycle stage around the tests: `env_setup`,
+#   `dut_info` or `dut_shutdown` (see STAGES and fixturerig.base.Step). All
+#   three share one entry type, told apart by `stage`; it has a required
+#   `name`, a `class` and params, like a generator. Steps only make sense for the whole run, so they are only
+#   allowed at the top level of a config file, never inside a group, and
+#   generators can't create them. They run per stage, in configuration order
+#   within each stage (see core/runner.py), no matter where between the
+#   other entries they are declared.
 #
 
 from __future__ import annotations
@@ -268,7 +277,27 @@ class Generator:
     generated: bool = False
 
 
-ConfigEntry = Union[Fixture, TestCase, Report, PythonPath, TestGroup, Generator]
+# Lifecycle stages a Step can belong to, in the order they run. The
+# generators run before env_setup, the tests between dut_info and dut_shutdown.
+STAGES = ("env_setup", "dut_info", "dut_shutdown")
+
+
+@dataclass
+class Step:
+    """A configured step of one lifecycle stage, e.g. flashing firmware in env_setup."""
+
+    stage: str
+    name: str
+    cls: str
+    params: ParamMap = field(default_factory=dict)
+    source: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.stage not in STAGES:
+            raise ConfigError(f"Unknown stage {self.stage!r} for step {self.name!r}, expected one of {list(STAGES)}")
+
+
+ConfigEntry = Union[Fixture, TestCase, Report, PythonPath, TestGroup, Generator, Step]
 
 
 @dataclass
@@ -306,6 +335,16 @@ class Config:
 
     def python_paths(self) -> list[PythonPath]:
         return [entry for entry in self.walk() if isinstance(entry, PythonPath)]
+
+    def steps(self, stage: str | None = None) -> list[Step]:
+        """The configured steps, in configuration order; only those of `stage` if given."""
+        if stage is not None and stage not in STAGES:
+            raise ConfigError(f"Unknown stage {stage!r}, expected one of {list(STAGES)}")
+        return [
+            entry
+            for entry in self.walk()
+            if isinstance(entry, Step) and (stage is None or entry.stage == stage)
+        ]
 
 
 def _walk_entries(entries: list[ConfigEntry]) -> Iterator[ConfigEntry]:

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from fixturerig.config.model import Config, ConfigError, Fixture, Generator, TestCase, TestGroup
+from fixturerig.config.model import Config, ConfigError, ConfigPath, Fixture, Generator, Step, TestCase, TestGroup
 from fixturerig.config.parse_yaml import parse_yaml_file, read_config_files
 
 
@@ -286,4 +286,79 @@ def test_generator_requires_a_name(tmp_path):
 def test_generator_create_group_must_be_a_bool(tmp_path):
     path = _write(tmp_path, "config.yaml", "- generator:\n    name: g\n    class: pkg.G\n    create_group: maybe\n")
     with pytest.raises(ConfigError, match="create_group must be true or false"):
+        parse_yaml_file(path)
+
+
+def test_parses_lifecycle_steps(tmp_path):
+    path = _write(
+        tmp_path,
+        "config.yaml",
+        """
+        - env_setup:
+            name: prepare
+            class: project.setup.Prepare
+        - env_setup:
+            name: flash
+            class: project.setup.Flash
+            parameterpath:
+              path: resources/firmware.bin
+        - dut_info:
+            name: collect
+            class: project.info.Collect
+            parametermap:
+              verbose: true
+        - dut_shutdown:
+            name: power_off
+            class: project.setup.PowerOff
+        """,
+    )
+
+    config = parse_yaml_file(path)
+
+    assert config.entries == [
+        Step(stage="env_setup", name="prepare", cls="project.setup.Prepare", source=path),
+        Step(
+            stage="env_setup",
+            name="flash",
+            cls="project.setup.Flash",
+            params={"path": ConfigPath(path="resources/firmware.bin", source=path)},
+            source=path,
+        ),
+        Step(stage="dut_info", name="collect", cls="project.info.Collect", params={"verbose": True}, source=path),
+        Step(stage="dut_shutdown", name="power_off", cls="project.setup.PowerOff", source=path),
+    ]
+
+
+@pytest.mark.parametrize("stage", ["env_setup", "dut_info", "dut_shutdown"])
+def test_step_requires_name_and_class(tmp_path, stage):
+    path = _write(tmp_path, "config.yaml", f"- {stage}:\n    class: pkg.S\n")
+    with pytest.raises(ConfigError, match="missing required key"):
+        parse_yaml_file(path)
+
+
+def test_step_rejects_unknown_keys(tmp_path):
+    path = _write(tmp_path, "config.yaml", "- env_setup:\n    name: s\n    class: pkg.S\n    autoloaded: true\n")
+    with pytest.raises(ConfigError, match="unknown key"):
+        parse_yaml_file(path)
+
+
+def test_step_inside_testgroup_rejected(tmp_path):
+    path = _write(
+        tmp_path,
+        "config.yaml",
+        "- testgroup:\n    name: g\n    entries:\n    - env_setup:\n        name: s\n        class: pkg.S\n",
+    )
+    with pytest.raises(ConfigError, match="not allowed inside a testgroup"):
+        parse_yaml_file(path)
+
+
+def test_unknown_entry_kind_lists_stages(tmp_path):
+    path = _write(tmp_path, "config.yaml", "- dut_teardown:\n    name: s\n    class: pkg.S\n")
+    with pytest.raises(ConfigError, match="'dut_shutdown'"):
+        parse_yaml_file(path)
+
+
+def test_dut_setup_is_not_an_entry_kind(tmp_path):
+    path = _write(tmp_path, "config.yaml", "- dut_setup:\n    name: s\n    class: pkg.S\n")
+    with pytest.raises(ConfigError, match="unknown config entry kind 'dut_setup'"):
         parse_yaml_file(path)

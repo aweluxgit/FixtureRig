@@ -32,8 +32,8 @@
 #
 # - Autoloaded fixtures (`autoloaded: true`) are the exception to lazy
 #   creation: run_tests creates them, in configuration order, right at the
-#   start of the run - before any other entry (including the planned
-#   env_setup entries) is executed. After that they behave as if every
+#   start of the run - before any other entry (including the env_setup
+#   steps) is executed. After that they behave as if every
 #   testcase required them under their configured name: they are started and
 #   stopped around every testcase, and a broken autoloaded fixture skips
 #   every testcase. A testcase may still name one explicitly to get a
@@ -70,12 +70,54 @@
 #   are skipped before they run. TestStarted carries the test specification:
 #   class, class docstring, configured params and traceability IDs.
 #
-# - Generators (see core/generator.py) are expanded by run_tests before
-#   anything else, unless that already happened (main.py runs them as their
-#   own phase). The runner then treats a Generator node like an anonymous
-#   group: it runs the generated entries in place and reports no group
-#   boundaries of its own - unless create_group is off, the generated
-#   entries are already wrapped in a TestGroup, which is reported as usual.
+# - Each phase of a run is its own function, so main.py (or a host system)
+#   calls them one by one inside a RunSession, which holds the state they
+#   share: the fixtures, the setup failure and the results. RunSession
+#   reports RunStarted/RunFinished and creates/tears down the fixtures;
+#   run_all() runs every phase in order in one call.
+#
+# - Generators (see core/generator.py) are expanded by the run_generators
+#   phase, the first one: right after the autoloaded fixtures are created
+#   and before any step runs, so a broken generator stops the run before
+#   the rig is touched. run_tests only runs tests; it refuses to run while a
+#   generator has not run yet, rather than silently leaving out the tests it
+#   would generate. The runner then treats a
+#   Generator node like an anonymous group: it runs the generated entries in
+#   place and reports no group boundaries of its own - unless create_group is
+#   off, the generated entries are already wrapped in a TestGroup, which is
+#   reported as usual.
+#
+# - The phases run in this order: autoloaded fixtures, generators, env_setup,
+#   dut_info, tests, dut_shutdown, fixture teardown. Lifecycle steps
+#   (config.model.Step, base.Step) run in configuration order within their
+#   stage. A step's params are mapped onto its __init__ and run() together,
+#   like a testcase's; fixture references work as for testcases, and the
+#   referenced fixtures are start()ed before run() and stop()ped after it.
+#
+# - The first env_setup / dut_info step that fails (class loading, argument
+#   mapping, a fixture problem, an exception or an invalid return value) ends
+#   the setup: the remaining setup steps don't run and
+#   every testcase is reported SKIPPED with the reason, since tests on an
+#   unprepared rig or DUT are meaningless. The dut_shutdown steps always run,
+#   all of them, even after a failed setup, an earlier failed shutdown step
+#   or an aborted run, so the DUT is left in a safe state. A failed shutdown
+#   step is logged and reported but does not change any test verdict.
+#
+# - Steps are not tests: they are not counted in RunFinished. Each step is
+#   reported as a group named "<stage>: <name>", so what it reports through
+#   `report` and the mapping its run() returns (as a two column table) show
+#   up in every report module. A failed step adds an ERROR VerdictEvent with
+#   the reason to its group.
+#
+# - Interactive mode (`--interactive`, RunSession(interactive=True)) is for
+#   debugging and test development: an exception raised by test, fixture,
+#   step or generator code is not turned into a verdict or a failed step but
+#   re-raised as it is, so it ends the program and an IDE can break on it.
+#   Configuration problems (class loading, argument mapping, unknown or
+#   broken fixtures, a failed self test) are still reported as usual. The
+#   cleanup still runs on the way out - dut_shutdown steps, fixture teardown
+#   and the reports - and stays non-raising, so the DUT is left in a safe
+#   state and the original exception reaches the top unchanged.
 #
 
 from __future__ import annotations
@@ -84,25 +126,30 @@ import logging
 import time
 import inspect
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 from fixturerig.base.fixture import Fixture
+from fixturerig.base.step import Step as BaseStep
 from fixturerig.base.verdict import Verdict, VerdictException, VerdictStatus
 from fixturerig.config.model import Config, ConfigError
 from fixturerig.config.model import Fixture as FixtureEntry
 from fixturerig.config.model import Generator as GeneratorEntry
+from fixturerig.config.model import Step as StepEntry
 from fixturerig.config.model import TestCase as TestCaseEntry
 from fixturerig.config.model import TestGroup
 from fixturerig.core.class_loader import ClassLoadError, load_class
-from fixturerig.core.generator import run_generators
+from fixturerig.core.generator import expand_generators
 from fixturerig.core.inheritance import ArgumentMappingError, map_config_to_method_args, map_config_to_methods
+from fixturerig.report.elements import Table
 from fixturerig.report.events import (
     GroupFinished,
     GroupStarted,
     RunFinished,
     RunStarted,
+    TableEvent,
     TestFinished,
     TestStarted,
+    VerdictEvent,
 )
 from fixturerig.report.stream import ReportStream
 
@@ -135,7 +182,9 @@ class TestResult:
 class FixtureManager:
     """Creates, shares and tears down the fixtures configured in a Config."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, interactive: bool = False):
+        # Re-raise exceptions from test, fixture and step code (see "Interactive mode").
+        self.interactive = interactive
         self._entries: dict[str, FixtureEntry] = {}
         for entry in config.fixtures():
             if entry.name in self._entries:
@@ -195,7 +244,7 @@ class FixtureManager:
             instance = self._create(self._entries[name])
         except Exception as exc:
             self._broken[name] = str(exc)
-            if isinstance(exc, FixtureError):
+            if isinstance(exc, FixtureError) or self.interactive:
                 raise
             raise FixtureError(f"Fixture {name!r} could not be created: {exc}") from exc
         finally:
@@ -211,7 +260,7 @@ class FixtureManager:
         and the exception is re-raised.
         """
         for name in self._ordered(self._active - names):
-            self._call(name, "lazy_stop")
+            self._call(name, "lazy_stop", reraise=self.interactive)
         self._active = set()
         for name in self._ordered(names):
             try:
@@ -232,6 +281,8 @@ class FixtureManager:
             try:
                 self._instances[name].stop()
             except Exception as exc:
+                if self.interactive:
+                    raise
                 logger.exception("Fixture %r failed to stop", name)
                 errors.append(f"fixture {name!r} stop() failed: {exc}")
         return errors
@@ -279,10 +330,12 @@ class FixtureManager:
     def _ordered(self, names: set[str]) -> list[str]:
         return [name for name in self._instances if name in names]
 
-    def _call(self, name: str, hook: str) -> None:
+    def _call(self, name: str, hook: str, reraise: bool = False) -> None:
         try:
             getattr(self._instances[name], hook)()
         except Exception:
+            if reraise:
+                raise
             logger.exception("Fixture %r failed in %s()", name, hook)
 
 
@@ -306,7 +359,12 @@ def run_test(
         return _run_test(test, fixtures, stream)
 
 
-def _run_test(test: TestCaseEntry, fixtures: FixtureManager, stream: ReportStream) -> TestResult:
+def _run_test(
+    test: TestCaseEntry,
+    fixtures: FixtureManager,
+    stream: ReportStream,
+    skip_reason: str | None = None,
+) -> TestResult:
     logger.debug("Run test %s", test.name)
     start_time = time.perf_counter()
 
@@ -339,6 +397,10 @@ def _run_test(test: TestCaseEntry, fixtures: FixtureManager, stream: ReportStrea
         )
         return TestResult(test.name, verdict, duration)
 
+    if skip_reason is not None:
+        logger.error("Test %s skipped: %s", test.name, skip_reason)
+        return result(Verdict(VerdictStatus.SKIPPED, skip_reason))
+
     if load_error is None and not callable(getattr(cls, "test", None)):
         return result(Verdict(VerdictStatus.SKIPPED, f"{test.cls!r} has no test() method"))
 
@@ -359,22 +421,28 @@ def _run_test(test: TestCaseEntry, fixtures: FixtureManager, stream: ReportStrea
     try:
         instance = cls(**init_kwargs)
     except Exception as exc:
+        if fixtures.interactive:
+            raise
         logger.exception("Test %s could not be instantiated", test.name)
         return result(Verdict(VerdictStatus.ERROR, f"{test.cls}() raised {exc!r}"))
 
     try:
         fixtures.activate(used)
     except Exception as exc:
+        if fixtures.interactive:
+            raise
         logger.exception("Test %s skipped: a fixture failed to start", test.name)
         return result(Verdict(VerdictStatus.SKIPPED, f"fixture start() failed: {exc}"))
 
-    verdict = _with_reported(_execute(instance, test.name, kwargs), stream)
+    verdict = _with_reported(_execute(instance, test.name, kwargs, fixtures.interactive), stream)
 
     cleanup_errors = []
     if "teardown" in kwargs:
         try:
             instance.teardown(**kwargs["teardown"])
         except Exception as exc:
+            if fixtures.interactive:
+                raise
             logger.exception("Test %s failed in teardown()", test.name)
             cleanup_errors.append(f"teardown() raised {exc!r}")
     cleanup_errors.extend(fixtures.deactivate(used))
@@ -405,10 +473,11 @@ def _with_reported(verdict: Verdict, stream: ReportStream) -> Verdict:
     return Verdict(VerdictStatus.FAILED, f"{summary}: {'; '.join(messages)}" if messages else summary)
 
 
-def _execute(instance: Any, name: str, kwargs: dict[str, dict[str, Any]]) -> Verdict:
+def _execute(instance: Any, name: str, kwargs: dict[str, dict[str, Any]], interactive: bool = False) -> Verdict:
     """Call setup() and test() on a testcase instance and classify the outcome.
 
-    `kwargs` holds the mapped config params per method name.
+    `kwargs` holds the mapped config params per method name. In interactive
+    mode an exception other than VerdictException is re-raised.
     """
     try:
         if "setup" in kwargs:
@@ -417,6 +486,8 @@ def _execute(instance: Any, name: str, kwargs: dict[str, dict[str, Any]]) -> Ver
     except VerdictException as exc:
         return _classify(exc.verdict)
     except Exception as exc:
+        if interactive:
+            raise
         logger.exception("Test %s raised an exception", name)
         return Verdict(VerdictStatus.ERROR, f"{type(exc).__name__}: {exc}")
     return _classify(outcome)
@@ -440,48 +511,236 @@ def _classify(outcome: Any) -> Verdict:
     )
 
 
-def run_tests(config: Config, report_stream: ReportStream | None = None) -> list[TestResult]:
+class RunSession:
+    """The state the phases of one run share: config, report stream, fixtures and results.
+
+    Use it as a context manager around the phases. Entering activates the
+    report stream (so `report` reaches it), reports RunStarted and creates the
+    autoloaded fixtures. Leaving - also when a phase raises - tears down every
+    fixture and reports RunFinished with the verdict counts of all tests run.
+
+    Without a `report_stream` the run reports into a stream with no modules.
+    The caller owns the stream and closes it (see main.py).
+
+    With `interactive` an exception from test, fixture, step or generator
+    code ends the run and propagates to the caller (see "Interactive mode").
+    """
+
+    def __init__(self, config: Config, report_stream: ReportStream | None = None, interactive: bool = False):
+        self.config = config
+        self.stream = report_stream if report_stream is not None else ReportStream()
+        self.interactive = interactive
+        self.fixtures = FixtureManager(config, interactive)
+        self.results: list[TestResult] = []
+        # Why the tests are skipped, once a setup step has failed.
+        self.setup_failure: str | None = None
+        self._activation: Any = None
+        self._start_time = 0.0
+
+    def __enter__(self) -> RunSession:
+        self._activation = self.stream.activate()
+        self._activation.__enter__()
+        self._start_time = time.perf_counter()
+        self.stream.emit(RunStarted())
+        try:
+            self.fixtures.load_autoloaded()
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        try:
+            self.fixtures.teardown_all()
+            counts: dict[str, int] = {}
+            for r in self.results:
+                counts[r.verdict.status.value] = counts.get(r.verdict.status.value, 0) + 1
+            self.stream.emit(RunFinished(counts=counts, duration=time.perf_counter() - self._start_time))
+        finally:
+            self._activation.__exit__(None, None, None)
+        passed = sum(1 for r in self.results if r.passed)
+        logger.info("%d of %d test(s) passed", passed, len(self.results))
+
+
+def run_env_setup(session: RunSession) -> None:
+    """Run the env_setup steps (see _run_setup_stage)."""
+    _run_setup_stage(session, "env_setup")
+
+
+def run_dut_info(session: RunSession) -> None:
+    """Run the dut_info steps (see _run_setup_stage)."""
+    _run_setup_stage(session, "dut_info")
+
+
+def run_dut_shutdown(session: RunSession) -> None:
+    """Run every dut_shutdown step, whatever happened before or in an earlier step."""
+    for step in session.config.steps("dut_shutdown"):
+        _run_step(step, session.fixtures, session.stream, cleanup=True)
+
+
+def run_generators(session: RunSession) -> None:
+    """Expand every generator that has not run yet (see core/generator.py).
+
+    Runs inside the session, so generate() can use `report`.
+
+    :raises GeneratorError: if a generator fails; it is a ConfigError.
+    """
+    expand_generators(session.config, session.interactive)
+
+
+def run_tests(session: RunSession) -> list[TestResult]:
     """Run every configured testcase in configuration order and return the results.
 
-    Generators that have not run yet are expanded first (see run_generators).
+    Only the tests: the generators must have run already (see run_generators).
+    After a failed setup step every testcase is reported SKIPPED. The results
+    are also added to `session.results`.
 
-    Everything the run and its tests report goes to `report_stream`. The
-    caller owns the stream and closes it (see main.py); without one the run
-    reports into a stream that has no modules.
+    :raises ConfigError: if a generator has not run yet.
     """
-    stream = report_stream if report_stream is not None else ReportStream()
-    run_generators(config)
-    fixtures = FixtureManager(config)
+    pending = [g.name for g in session.config.generators() if not g.generated]
+    if pending:
+        raise ConfigError(f"Generator(s) {pending} have not run; call run_generators() before run_tests()")
     results: list[TestResult] = []
-    start_time = time.perf_counter()
-    with stream.activate():
-        stream.emit(RunStarted())
-        try:
-            fixtures.load_autoloaded()
-            _run_entries(config.entries, fixtures, stream, results)
-        finally:
-            fixtures.teardown_all()
-            counts: dict[str, int] = {}
-            for r in results:
-                counts[r.verdict.status.value] = counts.get(r.verdict.status.value, 0) + 1
-            stream.emit(RunFinished(counts=counts, duration=time.perf_counter() - start_time))
-
-    passed = sum(1 for r in results if r.passed)
-    logger.info("%d of %d test(s) passed", passed, len(results))
+    try:
+        _run_entries(session.config.entries, session.fixtures, session.stream, results, session.setup_failure)
+    finally:
+        # Keep the results of the tests that ran, also when an interactive run ends early.
+        session.results.extend(results)
     return results
 
 
-def _run_entries(entries, fixtures: FixtureManager, stream: ReportStream, results: list[TestResult]) -> None:
-    """Run the testcases in `entries` depth first, reporting group boundaries."""
+def run_all(
+    config: Config, report_stream: ReportStream | None = None, interactive: bool = False
+) -> list[TestResult]:
+    """Run the whole lifecycle in one call, as main.py does, and return the test results.
+
+    Order: autoloaded fixtures, generators, env_setup, dut_info, tests,
+    dut_shutdown, fixture teardown.
+    """
+    with RunSession(config, report_stream, interactive) as session:
+        try:
+            run_generators(session)
+            run_env_setup(session)
+            run_dut_info(session)
+            run_tests(session)
+        finally:
+            run_dut_shutdown(session)
+    return session.results
+
+
+def _run_setup_stage(session: RunSession, stage: str) -> None:
+    """Run the steps of a setup stage until one fails.
+
+    Does nothing once a setup step has failed; the first failure is recorded
+    in `session.setup_failure`.
+    """
+    for step in session.config.steps(stage):
+        if session.setup_failure is not None:
+            return
+        error = _run_step(step, session.fixtures, session.stream)
+        if error is not None:
+            session.setup_failure = f"{stage} step {step.name!r} failed: {error}"
+
+
+def _run_step(step: StepEntry, fixtures: FixtureManager, stream: ReportStream, cleanup: bool = False) -> str | None:
+    """Run one lifecycle step, reported as a group of its own.
+
+    Never raises for step, configuration or fixture problems - except, in
+    interactive mode, for an exception from the step's own code, unless it
+    is a `cleanup` (dut_shutdown) step.
+
+    :return: None on success, else the error message.
+    """
+    label = f"{step.stage}: {step.name}"
+    logger.info("Run %s (%s)", label, step.cls)
+    start_time = time.perf_counter()
+    stream.emit(GroupStarted(name=label))
+    try:
+        error = _execute_step(step, fixtures, stream, fixtures.interactive and not cleanup)
+        if error is not None:
+            logger.error("%s failed: %s", label, error)
+            stream.emit(VerdictEvent(Verdict(VerdictStatus.ERROR, error)))
+    finally:
+        stream.emit(GroupFinished(name=label, duration=time.perf_counter() - start_time))
+    return error
+
+
+def _execute_step(step: StepEntry, fixtures: FixtureManager, stream: ReportStream, interactive: bool) -> str | None:
+    used: set[str] = set()
+    try:
+        cls = load_class(step.cls)
+        if not issubclass(cls, BaseStep):
+            return f"{step.cls!r} is not a subclass of fixturerig.base.Step"
+        init_kwargs, run_kwargs = map_config_to_methods(step, [cls, cls.run], fixtures.resolver(used))
+    except (ClassLoadError, ArgumentMappingError, FixtureError) as exc:
+        return str(exc)
+
+    try:
+        instance = cls(**init_kwargs)
+    except Exception as exc:
+        if interactive:
+            raise
+        logger.exception("Step %s could not be instantiated", step.name)
+        return f"{step.cls}() raised {exc!r}"
+
+    try:
+        fixtures.activate(used)
+    except Exception as exc:
+        if interactive:
+            raise
+        logger.exception("Step %s: a fixture failed to start", step.name)
+        return f"fixture start() failed: {exc}"
+
+    try:
+        info = instance.run(**run_kwargs)
+    except Exception as exc:
+        if interactive:
+            raise
+        logger.exception("Step %s raised an exception", step.name)
+        error = f"{type(exc).__name__}: {exc}"
+    else:
+        error = _report_info(info, step, stream)
+
+    stop_errors = fixtures.deactivate(used)
+    if error is None and stop_errors:
+        error = "; ".join(stop_errors)
+    return error
+
+
+def _report_info(info: Any, step: StepEntry, stream: ReportStream) -> str | None:
+    """Report the mapping a step's run() returned as a table. Returns an error for anything else."""
+    if info is None:
+        return None
+    if not isinstance(info, Mapping):
+        return f"run() returned {type(info).__name__}; expected a mapping or None"
+    rows = [
+        [str(key), value if isinstance(value, (str, int, float, bool, type(None))) else str(value)]
+        for key, value in info.items()
+    ]
+    stream.emit(TableEvent(Table(rows, headers=["Name", "Value"], title=step.name)))
+    return None
+
+
+def _run_entries(
+    entries,
+    fixtures: FixtureManager,
+    stream: ReportStream,
+    results: list[TestResult],
+    skip_reason: str | None = None,
+) -> None:
+    """Run the testcases in `entries` depth first, reporting group boundaries.
+
+    With a `skip_reason`, every testcase is reported SKIPPED without running.
+    """
     for entry in entries:
         if isinstance(entry, TestCaseEntry):
-            results.append(_run_test(entry, fixtures, stream))
+            results.append(_run_test(entry, fixtures, stream, skip_reason))
         elif isinstance(entry, GeneratorEntry):
-            _run_entries(entry.entries, fixtures, stream, results)
+            _run_entries(entry.entries, fixtures, stream, results, skip_reason)
         elif isinstance(entry, TestGroup):
             start_time = time.perf_counter()
             stream.emit(GroupStarted(name=entry.name))
             try:
-                _run_entries(entry.entries, fixtures, stream, results)
+                _run_entries(entry.entries, fixtures, stream, results, skip_reason)
             finally:
                 stream.emit(GroupFinished(name=entry.name, duration=time.perf_counter() - start_time))

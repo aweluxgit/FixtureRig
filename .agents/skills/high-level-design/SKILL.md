@@ -100,14 +100,15 @@ Execution is intentionally ordered. There is usually little value in the complex
 
 The intended lifecycle is:
 
-1. Environment setup, including restbus or simulation parameters.
-2. Device setup, including time synchronization and optional software flashing.
+1. Test generation.
+2. Environment setup, including restbus or simulation parameters, time synchronization and optional software flashing.
 3. DUT information gathering.
-4. Test generation.
-5. Test execution in configuration or source order.
-6. Result collection and reporting.
+4. Test execution in configuration or source order.
+5. Result collection and reporting.
 
 Test groups should support hierarchy. A configuration entry may describe a fixture, a test case, a generator, or a group containing other entries. Some entries may be organizational and should not themselves count as tests.
+
+For debugging and test development, the `--interactive` option changes how exceptions are handled. Any exception raised by test, fixture, step or generator code falls through immediately to the top of the program and ends it, instead of being turned into an `error` verdict or a failed step. This lets an IDE that breaks on uncaught exceptions stop at the root cause. Verdict exceptions and configuration problems (class loading, argument mapping, unknown or broken fixtures, a failed self test) are still reported as usual. Cleanup still runs on the way out: dut_shutdown steps, fixture teardown and report finalization. It stays non-raising so the DUT is left in a safe state and the original exception reaches the top unchanged.
 
 When configuration values override one another, use an explicit and deterministic precedence rule. Do not add implicit override behavior until the precedence model is represented in the configuration model and covered by tests.
 
@@ -199,7 +200,7 @@ Contains the following methods for the testcase class:
 	If the test method throws an exception, the test case is considered an error unless the returned exception is inheriting from a verdict_exception. In that case the verdict is determined by the exception.
 - `teardown`: called after the test case is run. Used to teardown the test case.
 
-Errors in `setup` and `teardown` affect the test verdict just like errors in `test`.
+Errors in `setup` and `teardown` affect the test verdict just like errors in `test`. With `--interactive` such an exception is not turned into a verdict; it ends the run (see "Execution Model").
 
 ### Generator module
 
@@ -214,7 +215,7 @@ Generators add tests with specific parameters based on additional inputs. Effect
 - The generator's `name` is automatically used as the name of a test group that is attached to the generator node. The entries returned by `generate()` become the entries of that group.
 - The generator node has a `create_group` flag, `True` by default. If the config sets it to `false`, no group is created below the generator and the entries returned by `generate()` are added directly to the list of the generator node.
 - Generators don't have `setup()` or `teardown()` methods for now.
-- Generators run before the tests and before any fixture is created, so a generator can't take fixture parameters yet.
+- Generators run first, before environment setup and DUT information gathering, so a generator can't use DUT information and can't take fixture parameters.
 - A generated entry must be a `TestCase`, a `TestGroup` or another `Generator`; nested generators are expanded as well.
 - Inside `generate()` the config model module (`fixturerig.config.model`) is used directly to create entries.
 

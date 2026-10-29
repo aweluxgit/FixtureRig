@@ -6,7 +6,7 @@ from fixturerig.config.model import Config, ConfigError
 from fixturerig.config.model import Fixture as FixtureEntry
 from fixturerig.config.model import TestCase as TestCaseEntry
 from fixturerig.config.model import TestGroup
-from fixturerig.core.runner import FixtureManager, run_test, run_tests
+from fixturerig.core.runner import FixtureManager, run_all, run_test
 from fixturerig.report import ReportModule, ReportStream, current_stream, report
 
 CALLS: list[str] = []
@@ -223,7 +223,7 @@ def test_duplicate_fixture_names_are_config_errors():
         FixtureManager(make_config(psu_entry(), psu_entry()))
 
 
-# --- run_tests: ordering and fixture sharing --------------------------------
+# --- run_all: ordering and fixture sharing --------------------------------
 
 
 def test_run_tests_shares_fixture_lazy_stops_and_tears_down():
@@ -233,7 +233,7 @@ def test_run_tests_shares_fixture_lazy_stops_and_tears_down():
         TestCaseEntry(name="c", cls=cls_path(NoFixtureTest)),
     )
 
-    results = run_tests(config)
+    results = run_all(config)
 
     assert [r.name for r in results] == ["a", "b", "c"]
     assert all(r.passed for r in results)
@@ -242,7 +242,7 @@ def test_run_tests_shares_fixture_lazy_stops_and_tears_down():
 
 
 def test_run_tests_unused_fixture_is_never_created():
-    results = run_tests(make_config(psu_entry(), TestCaseEntry(name="c", cls=cls_path(NoFixtureTest))))
+    results = run_all(make_config(psu_entry(), TestCaseEntry(name="c", cls=cls_path(NoFixtureTest))))
     assert results[0].passed
     assert CALLS == ["nofixture.test"]
 
@@ -256,12 +256,12 @@ def autoloaded_psu(**params) -> FixtureEntry:
 
 
 def test_autoloaded_fixture_is_created_before_the_first_test():
-    run_tests(make_config(TestCaseEntry(name="c", cls=cls_path(NoFixtureTest)), autoloaded_psu()))
+    run_all(make_config(TestCaseEntry(name="c", cls=cls_path(NoFixtureTest)), autoloaded_psu()))
     assert CALLS[:3] == ["psu.setup:COM1", "psu.self_test", "psu.start"]
 
 
 def test_autoloaded_fixture_is_created_without_any_tests():
-    run_tests(make_config(autoloaded_psu()))
+    run_all(make_config(autoloaded_psu()))
     assert CALLS == ["psu.setup:COM1", "psu.self_test", "psu.disconnect", "psu.teardown"]
 
 
@@ -272,7 +272,7 @@ def test_autoloaded_fixture_is_started_and_stopped_for_every_test():
         limit_test("b", limit=5),
     )
 
-    results = run_tests(config)
+    results = run_all(config)
 
     assert all(r.passed for r in results)
     assert CALLS == [
@@ -295,7 +295,7 @@ def test_autoloaded_fixture_is_started_and_stopped_for_every_test():
 def test_broken_autoloaded_fixture_skips_every_test():
     config = make_config(autoloaded_psu(healthy=False), TestCaseEntry(name="a", cls=cls_path(NoFixtureTest)))
 
-    results = run_tests(config)
+    results = run_all(config)
 
     assert results[0].verdict.status is VerdictStatus.SKIPPED
     assert "self test" in results[0].verdict.message
@@ -342,7 +342,7 @@ class SoftFailsThenErrors(BaseTestCase):
 
 def _events(config: Config) -> list:
     recorder = _Recorder()
-    run_tests(config, ReportStream([recorder]))
+    run_all(config, ReportStream([recorder]))
     return recorder.events
 
 
@@ -428,7 +428,7 @@ class Aborts(BaseTestCase):
 def test_run_finished_is_reported_when_the_run_aborts():
     recorder = _Recorder()
     with pytest.raises(KeyboardInterrupt):
-        run_tests(make_config(TestCaseEntry(name="a", cls=cls_path(Aborts))), ReportStream([recorder]))
+        run_all(make_config(TestCaseEntry(name="a", cls=cls_path(Aborts))), ReportStream([recorder]))
     assert recorder.events[-1].kind == "run_finished"
 
 
@@ -547,3 +547,80 @@ def test_invalid_fixturemap_is_skipped(params, fixturemap, message):
 
     assert result.verdict.status is VerdictStatus.SKIPPED
     assert message in result.verdict.message
+
+
+# --- interactive mode --------------------------------------------------------
+
+
+class CrashesInSetup(BaseTestCase):
+    def setup(self):
+        raise RuntimeError("setup boom")
+
+    def test(self):
+        return True
+
+
+class CrashesInInit(BaseTestCase):
+    def __init__(self):
+        raise RuntimeError("init boom")
+
+    def test(self):
+        return True
+
+
+class CrashingPsu(Psu):
+    def setup(self):
+        raise RuntimeError("psu boom")
+
+
+class PsuFailsToStop(Psu):
+    def stop(self):
+        raise RuntimeError("stop boom")
+
+
+@pytest.mark.parametrize(
+    "cls, message",
+    [(Crashes, "boom"), (CrashesInSetup, "setup boom"), (CrashesInInit, "init boom"), (BadTeardown, "cleanup failed")],
+)
+def test_interactive_test_exception_ends_the_run(cls, message):
+    config = make_config(
+        TestCaseEntry(name="crash", cls=cls_path(cls)),
+        TestCaseEntry(name="after", cls=cls_path(NoFixtureTest)),
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        run_all(config, interactive=True)
+
+    assert "nofixture.test" not in CALLS
+
+
+def test_interactive_fixture_exception_is_raised_as_it_is():
+    config = make_config(FixtureEntry(name="psu", cls=cls_path(CrashingPsu)), limit_test(limit=4.5))
+
+    with pytest.raises(RuntimeError, match="psu boom"):
+        run_all(config, interactive=True)
+
+
+def test_interactive_fixture_stop_exception_ends_the_run_after_teardown():
+    config = make_config(FixtureEntry(name="psu", cls=cls_path(PsuFailsToStop)), limit_test(limit=4.5))
+
+    with pytest.raises(RuntimeError, match="stop boom"):
+        run_all(config, interactive=True)
+
+    assert CALLS[-2:] == ["psu.disconnect", "psu.teardown"]
+
+
+def test_interactive_still_reports_verdicts_and_config_problems():
+    config = make_config(
+        TestCaseEntry(name="raises_verdict", cls=cls_path(RaisesVerdict)),
+        TestCaseEntry(name="unknown", cls="no.such.Module"),
+        TestCaseEntry(name="ok", cls=cls_path(NoFixtureTest)),
+    )
+
+    results = run_all(config, interactive=True)
+
+    assert [r.verdict.status for r in results] == [
+        VerdictStatus.FAILED,
+        VerdictStatus.SKIPPED,
+        VerdictStatus.PASSED,
+    ]

@@ -14,6 +14,8 @@
 #   Open Decisions"). This module does not guess at that; it only validates
 #   the "key=value" shape and hands the pairs through unresolved, for the
 #   caller (currently main.py) to warn about until precedence is designed.
+# - --interactive is a run option, not part of the config model: main.py hands
+#   it to the RunSession (see core/runner.py).
 #
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ class Args:
 
     config_paths: list[Path] = field(default_factory=list)
     params: dict[str, str] = field(default_factory=dict)
+    interactive: bool = False
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -56,6 +59,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="KEY=VALUE",
         help="Override a top level parameter. May be given multiple times.",
+    )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Let any exception within a test fall through to the top of the program and end it. "
+        "Use it in an IDE that breaks on uncaught exceptions to debug tests.",
     )
     return parser
 
@@ -92,6 +101,7 @@ def read_app_args(argv: list[str] | None = None) -> Args:
     return Args(
         config_paths=[Path(p) for p in namespace.config_paths],
         params=params,
+        interactive=namespace.interactive,
     )
 
 
