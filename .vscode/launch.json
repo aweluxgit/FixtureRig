@@ -22,6 +22,29 @@
             "console": "integratedTerminal"
         },
         {
+            // Debug (F5) stops where the exception of test 2 is raised: --interactive
+            // lets it fall through uncaught, and "Uncaught Exceptions" is on by default
+            // in the Breakpoints view. Run without debugging (Ctrl+F5) just prints
+            // the traceback.
+            "name": "FixtureRig: integration testset_02 (--interactive)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "fixturerig",
+            "args": [
+                "--config",
+                "config/env.yaml",
+                "--config",
+                "config/test.yaml",
+                "--interactive"
+            ],
+            "cwd": "${workspaceFolder}/devtests/integration/testset_02",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
             "name": "FixtureRig: integration tests",
             "type": "node-terminal",
             "request": "launch",

@@ -11,3 +11,7 @@ dist/
 demo/reports/
 demo/logs/
 devtests/integration/reports/
+notes.txt
+
+# Documentation build output
+docs/_build/

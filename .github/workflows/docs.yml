@@ -1,0 +1,54 @@
+name: docs
+
+# Builds the documentation on every push and pull request, and publishes it to
+# GitHub Pages on pushes to main. One-time setup: Settings -> Pages -> Source:
+# "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never cancel a running deployment; let it finish before the next one starts.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[docs]"
+      - name: Build (warnings are errors)
+        run: sphinx-build -W --keep-going -n -b html docs docs/_build/html
+      - name: Check links in the docs
+        run: sphinx-build -b linkcheck docs docs/_build/linkcheck
+        continue-on-error: true
+      - name: Upload for GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_build/html
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -32,10 +32,18 @@ dev = [
     "openpyxl>=3.1",
     "reportlab>=4.0",
 ]
+docs = [
+    "sphinx>=7.2",
+    "myst-parser>=2.0",
+    "furo>=2024.1.29",
+    "sphinx-autodoc-typehints>=2.0",
+    "sphinx-copybutton>=0.5",
+]
 
 [project.urls]
 Homepage = "https://github.com/aweluxgit/FixtureRig"
 Source = "https://github.com/aweluxgit/FixtureRig"
+Documentation = "https://aweluxgit.github.io/FixtureRig/"
 
 [project.scripts]
 fixturerig = "fixturerig.main:main"
